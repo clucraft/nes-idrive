@@ -1,0 +1,6 @@
+{
+  "id": "clucraft_nes",
+  "version": "0.1.0",
+  "title": "NES",
+  "description": "NES games on the iDrive (FCEUmm emulator). No games included: it runs the .nes files you copy to it. Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves. No sound"
+}

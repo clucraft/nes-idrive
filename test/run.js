@@ -2,6 +2,7 @@
 
 // NES app: the emulator (app/nes.wasm through nes-core.js) on a small test program made here,
 // the controller -> pad mapping (controls.js) and the games / saves on disk (library.js).
+// Then the MGU Store's view of this repository: mgu-repo.json and the committed package in store/.
 // No SDK, head unit or game needed; runs on Node 8 (the head unit's) as on a current one:
 //   node test/run.js        (npm test; npm run test:node8 for Node 8)
 
@@ -14,6 +15,8 @@ const ROOT = path.join(__dirname, '..');
 const { Nes, BTN, isRom } = require(path.join(ROOT, 'app/nes-core'));
 const { Controls, TAP, GAP } = require(path.join(ROOT, 'app/controls'));
 const { Library, titleOf } = require(path.join(ROOT, 'app/library'));
+const { unpack } = require(path.join(ROOT, 'tools/tar'));
+const { spawnSync } = require('child_process');
 
 let failed = 0;
 const check = async (name, fn) => {
@@ -205,6 +208,80 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
         again.dropState(again.byId(a.id));
         assert(again.state(again.byId(a.id)) === null);
         assert(!fs.readdirSync(path.join(tmp, 'saves')).some((f) => /\.tmp$/.test(f)), 'a temporary file was left');
+    });
+
+    /* ---------- the MGU Store: mgu-repo.json and store/ (the Store's docs/PUBLISHING.md, "Repo tree") ---------- */
+    const json = (rel) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+    const SEMVER = /^\d+\.\d+\.\d+$/, relPath = (p) => typeof p === 'string' && !!p && !path.isAbsolute(p) && p.split('/').indexOf('..') < 0;
+    const spec = json('app/app.json');
+    let entry = null, output = null, members = [];
+    await check('store: mgu-repo.json lists the app with a build script and a committed output', () => {
+        const repo = json('mgu-repo.json');
+        assert(repo.schema === 1 && Array.isArray(repo.components) && repo.components.length === 1, 'schema 1 with one component');
+        entry = repo.components[0];
+        assert.strictEqual(entry.id, spec.id);
+        assert(/^[a-z0-9]+_[a-z0-9_]+$/.test(entry.id), 'the id has a prefix of its own: ' + entry.id);
+        assert(entry.kind === 'app' && relPath(entry.path), 'kind app and a path in the repository');
+        const b = entry.build;
+        assert(b && relPath(b.node) && b.python === undefined && fs.existsSync(path.join(ROOT, b.node)), 'build.node names a script in the repository');
+        assert(Array.isArray(b.args) && b.args.every((a) => typeof a === 'string') && !b.network && !b.sdk, 'args are strings; no network, no SDK folder');
+        // (with "shared", an install downloads the app's folder, these and the script, not the whole repository)
+        assert(Array.isArray(b.shared) && b.shared.length && b.shared.every((f) => relPath(f) && fs.existsSync(path.join(ROOT, f))), 'build.shared names files in the repository');
+        assert(Array.isArray(entry.mguHmi) && entry.mguHmi.length && entry.mguHmi.every((h) => h === 'ID7' || h === 'ID8'), 'mguHmi');
+        assert(Array.isArray(entry.needs) && entry.needs.every((n) => /^[a-z][a-z0-9-]*$/.test(n)), 'needs: capabilities');
+        assert(Object.keys(entry.requires).every((k) => k !== entry.id && SEMVER.test(entry.requires[k])), 'requires: ids to x.y.z versions');
+    });
+    await check('store: store/app.json is this version of the app, with a title, a description and an icon', () => {
+        const m = json(path.join(entry.path, 'app.json'));
+        assert.strictEqual(m.id, entry.id);
+        assert.strictEqual(m.version, spec.version, 'store/ is version ' + m.version + ', app/app.json ' + spec.version + ': run "npm run build:store"');
+        assert(SEMVER.test(m.version) && m.title === spec.title && m.description === spec.description && m.description.length > 20);
+        const icon = fs.readFileSync(path.join(ROOT, entry.path, 'icon.png'));
+        assert(icon.slice(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && icon.length <= 128 << 10, 'icon.png: a PNG of at most 128 KiB');
+        assert(icon.readUInt32BE(16) === 140 && icon.readUInt32BE(20) === 140, 'icon.png is 140 x 140');
+        assert(icon.equals(fs.readFileSync(path.join(ROOT, 'app/icon.png'))), 'it is the app\'s own icon');
+        const fill = (t) => t.replace(/\{id\}/g, entry.id).replace(/\{version\}/g, m.version).replace(/\{dir\}/g, entry.path);
+        output = fill(entry.build.output);
+        assert(relPath(output) && fs.existsSync(path.join(ROOT, output)), 'the build\'s output ' + output + ' is in the repository');
+        assert.deepStrictEqual(fs.readdirSync(path.join(ROOT, entry.path)).filter((f) => /\.tgz$/.test(f)), [path.basename(output)], 'one package in store/');
+    });
+    await check('store: the package is an OAP package of that id and version, without an SDK and without games', () => {
+        members = unpack(fs.readFileSync(path.join(ROOT, output)));
+        assert(members.length > 50 && members.every((m) => m.name.indexOf('package/') === 0 && m.name.indexOf('..') < 0), 'its files are under package/');
+        const bad = members.filter((m) => /node_modules|oap-sdk\/|roms\.pack$|\.nes$/i.test(m.name)).map((m) => m.name);
+        assert(!bad.length, 'must not be published: ' + bad.join(' '));
+        const pkg = JSON.parse(members.find((m) => m.name === 'package/package.json').data.toString());
+        assert(pkg.name === entry.id && pkg.version === spec.version && pkg.main === 'javascript/app.js', pkg.name + '@' + pkg.version);
+        assert.deepStrictEqual(pkg.mguHmi, entry.mguHmi);
+        assert.strictEqual(pkg.license, 'GPL-2.0-or-later');
+        ['package/rhmiData/application.json', 'package/manifest.json', 'package/permissions.json', 'package/javascript/kit/mgu.js'].forEach((n) => assert(members.some((m) => m.name === n), n + ' is missing'));
+        // the head unit generates the oap-sdk module for a package whose javascript asks for it and ships none
+        assert(/require\(['"]oap-sdk['"]\)/.test(members.find((m) => m.name === 'package/javascript/kit/mgu.js').data.toString()));
+    });
+    await check('store: the package holds this app/ (else: npm run build:store)', () => {
+        const inPkg = (n) => { const m = members.find((x) => x.name === 'package/javascript/' + n); assert(m, n + ' is not in the package'); return m.data; };
+        [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
+            assert(inPkg(q[0]).equals(fs.readFileSync(path.join(ROOT, 'app', q[1] || q[0]))), 'app/' + (q[1] || q[0]) + ' changed since the package was built');
+        });
+        const rt = JSON.parse(inPkg('kit/app-spec.json').toString());
+        ['id', 'title', 'version', 'screens', 'settings', 'config'].forEach((k) => assert.deepStrictEqual(rt[k], spec[k], 'app/app.json "' + k + '" changed since the package was built'));
+    });
+    await check('store: the on-unit build passes with only the files an install downloads, and says what is wrong without the package', () => {
+        const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'nes-store-'));
+        const put = (rel) => {
+            const from = path.join(ROOT, rel), to = path.join(copy, rel);
+            if (fs.statSync(from).isDirectory()) { fs.mkdirSync(to); fs.readdirSync(from).forEach((f) => put(rel + '/' + f)); return; }
+            rel.split('/').slice(0, -1).reduce((d, part) => { const n = path.join(d, part); if (!fs.existsSync(n)) fs.mkdirSync(n); return n; }, copy);
+            fs.writeFileSync(to, fs.readFileSync(from));
+        };
+        [entry.path].concat(entry.build.shared, [entry.build.node]).forEach(put);
+        const args = entry.build.args.map((a) => a.replace(/\{id\}/g, entry.id).replace(/\{version\}/g, spec.version).replace(/\{dir\}/g, entry.path));
+        const run = () => spawnSync(process.execPath, [entry.build.node].concat(args), { cwd: copy, encoding: 'utf8' });
+        let r = run();
+        assert(r.status === 0 && fs.statSync(path.join(copy, output)).isFile(), 'the build failed: ' + r.stdout + r.stderr);
+        fs.unlinkSync(path.join(copy, output));
+        r = run();
+        assert(r.status === 1 && /build:store/.test(r.stderr), 'no clear failure without the package: ' + r.status + ' ' + r.stderr);
     });
 
     console.log(failed ? failed + ' failed' : 'nes: all ok');
