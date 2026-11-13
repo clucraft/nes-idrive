@@ -1,0 +1,9 @@
+node_modules/
+# tools/node8.js downloads
+.cache/
+# car packages contain BMW's SDK (and your games): never commit or publish them
+dist/
+*.mgu
+# games are yours: none belong in git (app/roms/.gitignore says the same)
+*.nes
+*.NES

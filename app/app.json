@@ -1,0 +1,239 @@
+{
+  "id": "nes",
+  "title": "NES",
+  "description": "NES games on the iDrive (FCEUmm). Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves",
+  "version": "0.1.0",
+  "vendor": "custom",
+  "loggingId": "OAA6",
+  "maxDiskUsage": 104857600,
+  "iconGlyph": "NES",
+  "signals": {
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "rs"
+    },
+    "de.bmw.infotainment.controlelements.FrontCCU": {
+      "statusRotaryEncoderState": "rs"
+    }
+  },
+  "config": {
+    "romDirs": []
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "menu",
+      "title": "NES",
+      "settings": true,
+      "items": [
+        [
+          "button",
+          "BTN_PLAY",
+          "Continue"
+        ],
+        [
+          "button",
+          "BTN_RESET",
+          "Restart"
+        ],
+        [
+          "text",
+          "MENU_INFO",
+          ""
+        ],
+        [
+          "button",
+          "BTN_ROM_0",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_1",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_2",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_3",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_4",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_5",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_6",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_7",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_8",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_ROM_9",
+          "-"
+        ],
+        [
+          "button",
+          "BTN_MORE",
+          "More games"
+        ]
+      ]
+    },
+    {
+      "name": "GAME",
+      "kind": "canvas",
+      "title": "NES",
+      "chrome": false,
+      "buttons": [
+        [
+          "BTN_SELECT",
+          "Select"
+        ],
+        [
+          "BTN_START",
+          "Start"
+        ],
+        [
+          "BTN_B",
+          "B"
+        ],
+        [
+          "BTN_A",
+          "A"
+        ]
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "parkedOnly",
+      "label": "Parked only (pauses while driving)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "resume",
+      "label": "Carry on where the game was left",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "press",
+      "label": "Controller press",
+      "type": "choice",
+      "default": "a",
+      "options": [
+        [
+          "a",
+          "A"
+        ],
+        [
+          "b",
+          "B"
+        ]
+      ]
+    },
+    {
+      "key": "turnR",
+      "label": "Controller turn right",
+      "type": "choice",
+      "default": "b",
+      "options": [
+        [
+          "b",
+          "B"
+        ],
+        [
+          "a",
+          "A"
+        ],
+        [
+          "start",
+          "Start"
+        ],
+        [
+          "select",
+          "Select"
+        ],
+        [
+          "none",
+          "Nothing"
+        ]
+      ]
+    },
+    {
+      "key": "turnL",
+      "label": "Controller turn left",
+      "type": "choice",
+      "default": "start",
+      "options": [
+        [
+          "start",
+          "Start"
+        ],
+        [
+          "select",
+          "Select"
+        ],
+        [
+          "b",
+          "B"
+        ],
+        [
+          "a",
+          "A"
+        ],
+        [
+          "none",
+          "Nothing"
+        ]
+      ]
+    },
+    {
+      "key": "touch",
+      "label": "Touch buttons beside the picture",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "edges",
+      "label": "Picture edges",
+      "type": "choice",
+      "default": "crop",
+      "options": [
+        [
+          "crop",
+          "Hidden, as on a TV (224 lines)"
+        ],
+        [
+          "full",
+          "Shown (240 lines)"
+        ]
+      ]
+    },
+    {
+      "key": "flicker",
+      "label": "Less sprite flicker (no 8-sprite limit)",
+      "type": "bool",
+      "default": false
+    }
+  ]
+}

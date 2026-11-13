@@ -1,0 +1,15 @@
+{
+  "name": "nes-idrive",
+  "version": "0.1.0",
+  "description": "NES games on the BMW iDrive 7 (MGU) head unit: the FCEUmm emulator as WebAssembly on the idrive7-apps kit",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "scripts": {
+    "setup": "node tools/setup.js",
+    "emu": "node tools/emu.js",
+    "test": "node test/run.js",
+    "test:node8": "node tools/node8.js test/run.js",
+    "build:car": "node tools/build-car.js",
+    "build:core": "bash core/build.sh"
+  }
+}

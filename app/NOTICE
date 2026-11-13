@@ -1,0 +1,18 @@
+NES for iDrive 7 - licences
+
+This app is distributed under the GNU General Public License, version 2 or later (LICENSE in this
+folder), because it contains nes.wasm: the NES emulator FCEUmm in its libretro form
+(https://github.com/libretro/libretro-fceumm, GPL-2.0-or-later, commit e0f3086; FCE Ultra by
+Xodnizel and the FCEU / FCEUmm authors, see its Authors file) compiled to WebAssembly together with
+a small frontend, mgu_libretro.c.
+
+The complete source of nes.wasm is in https://github.com/clucraft/nes-idrive: the core, unchanged,
+as the submodule vendor/libretro-fceumm; the frontend and the script that builds it in core/.
+
+The app runs on the idrive7-apps kit (https://github.com/cauliflowermossgrape/idrive7-apps, MIT),
+whose runtime is packed with it.
+
+No games are included. The app runs .nes files its user supplies.
+
+Nintendo Entertainment System and NES are trademarks of Nintendo. FCEUmm and this app are not
+affiliated with Nintendo or BMW.
