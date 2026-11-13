@@ -10,6 +10,7 @@
     "test": "node test/run.js",
     "test:node8": "node tools/node8.js test/run.js",
     "build:car": "node tools/build-car.js",
+    "build:store": "node tools/build-store.js",
     "build:core": "bash core/build.sh"
   }
 }

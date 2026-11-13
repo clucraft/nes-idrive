@@ -138,7 +138,7 @@ mgu.run({
             let info;
             if (err) info = err;
             else if (driving()) info = 'Parked only - the game waits while you drive (Settings: Parked only)';
-            else if (!lib.games.length) info = 'No games yet: put .nes files into app/roms/ and build again, or copy them to ' + romDir;
+            else if (!lib.games.length) info = 'No games yet: copy .nes files to ' + romDir + ' (or into app/roms/ before a build)';
             else info = lib.games.length + (lib.games.length === 1 ? ' game' : ' games') + '. In a game, BACK returns here and saves';
             put('BTN_PLAY', cur ? 'Continue: ' + cur.title : 'Continue');
             put('BTN_RESET', cur ? 'Restart: ' + cur.title : 'Restart');
