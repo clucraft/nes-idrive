@@ -204,17 +204,22 @@ The [MGU Store](https://github.com/robertnisipeanu/mgu-store) is an app store fo
    - adds BMW's SDK to it on the head unit, from one of BMW's own apps there
    - installs the controller gate (`mgu-inputgate`) first when it is missing. It comes from idrive7-apps, one of the sources the Store starts with.
 3. **Restart the head unit** if the Store shows *Restart pending* (Settings → **Restart head unit**). The controller gate only takes effect then. Until it does, the game still runs, but the head unit acts on the controller as well: a push can open its own menus.
-4. **Copy your games to the head unit.** The Store's package has none. Open the app once: its menu names the games folder. Then, with the SSH key and address from the rooting tool:
+4. **Copy your games to the head unit.** The Store's package has none. Open the app once, so it makes its games folder. Then, with the SSH key and address from the rooting tool, ask the head unit for that folder:
 
    ```bash
-   scp -i <id_rsa> *.nes root@<address>:/var/opt/public/oap/oap_<uid>/data/roms/
+   ssh -i <id_rsa> root@<address> "ls -d /var/opt/public/oap/oap_*/data/roms"
    ```
 
-   This finds `<uid>` without opening the app:
+   It answers `/var/opt/public/oap/oap_<uid>/data/roms`. From the folder on your PC that holds the games, send them there:
 
    ```bash
-   ssh -i <id_rsa> root@<address> 'grep -l clucraft_nes /var/opt/public/oap/oap_*/source/package.json'
+   tar cf - *.nes | ssh -i <id_rsa> root@<address> "tar xf - -C /var/opt/public/oap/oap_<uid>/data/roms"
    ```
+
+   - **On Windows, run this in Command Prompt, not PowerShell.** Windows PowerShell's pipe changes the bytes on the way.
+   - **On macOS,** start the line with `COPYFILE_DISABLE=1` and add `--no-xattrs` after `tar`: the head unit's `tar` cannot restore the attributes macOS adds.
+   - **Why not `scp`:** the head unit has no `scp` or `sftp` server in some firmware builds, so idrive7-apps' own installer sends its files this way too.
+   - **One game at a time** also works: `ssh -i <id_rsa> root@<address> "cat > /var/opt/public/oap/oap_<uid>/data/roms/Game.nes" < Game.nes`
 
 - **A renderer has to be installed.** The Store's own (mgu-render, installed with the Store unless you left it out) or idrive7-apps' (`idrive7-renderd`) will do. Without one the Store refuses the install and says so.
 - **Updates:** a commit here that changes the package in `store/` shows in the Store as an update. It never installs on its own.
@@ -241,7 +246,7 @@ The [MGU Store](https://github.com/robertnisipeanu/mgu-store) is an app store fo
      - `push-to-car.sh`: `HU=root@<address> KEY=<.../data/enrollments/<VIN>/id_rsa>`
      - `push-to-car.ps1`: `-Key <...\data\enrollments\<VIN>\id_rsa> -Ip <address>`
    - Run its `check` first. It is read-only and lists what `install` would change.
-5. **More games later:** copy `.nes` files with `scp` to `/var/opt/public/oap/oap_<uid>/data/roms/`. The installer's `status` lists the apps; the app's log, `clucraft_nes.log` in its data folder, names the folder.
+5. **More games later:** send `.nes` files to `/var/opt/public/oap/oap_<uid>/data/roms/` over SSH, as in step 4 of [From the MGU Store](#from-the-mgu-store). The installer's `status` lists the apps; the app's log, `clucraft_nes.log` in its data folder, names the folder.
 
 ### Either way
 
