@@ -30,7 +30,7 @@ const { HMI7 } = require('./kit/display');
 const Parked = require('./kit/parked');
 const { Nes } = require('./nes-core');
 const { Controls } = require('./controls');
-const { Library, mkdirp } = require('./library');
+const { Library, mkdirp, usbFolders } = require('./library');
 
 const W = 1600, H = 520, IMG = 1;
 const SLOTS = 10;                                   // game buttons in the menu (app.json BTN_ROM_0..9), a page of them
@@ -53,10 +53,24 @@ mgu.run({
         /* ---------- the games ---------- */
         const romDir = path.join(ctx.dataDir, 'roms');
         try { mkdirp(romDir); } catch (e) { log.warn('nes: ' + romDir + ': ' + e.message); }
-        const extra = (ctx.spec.config && ctx.spec.config.romDirs) || [];
-        const lib = new Library({ pack: path.join(__dirname, 'roms.pack'), dirs: [romDir].concat(extra), dataDir: ctx.dataDir, log });
+        const config = ctx.spec.config || {};
+        // games on a USB stick, in a folder "nes" at its top: there while the stick is in
+        let usbNow = null;
+        const usb = () => {
+            const u = usbFolders(config.usbRoots || [], ['nes', 'NES', 'Nes']);
+            const now = u.dirs.concat(u.errors).join(' | ');
+            if (now !== usbNow) {
+                usbNow = now;
+                log.info('nes: USB sticks: ' + (u.dirs.length ? 'games in ' + u.dirs.join(', ') : 'no folder "nes" on one') + (u.errors.length ? '; cannot read ' + u.errors.join(', ') : ''));
+            }
+            return u.dirs;
+        };
+        const lib = new Library({
+            packs: [path.join(__dirname, 'games.pack'), path.join(__dirname, 'roms.pack')],
+            dirs: [romDir].concat(config.romDirs || []), more: usb, dataDir: ctx.dataDir, log,
+        });
         lib.scan();
-        log.info('nes: ' + lib.games.length + ' game(s); more go into ' + romDir);
+        log.info('nes: ' + lib.games.length + ' game(s); more go on a USB stick (folder "nes") or into ' + romDir);
 
         /* ---------- the console ---------- */
         const nes = new Nes({ wasm: path.join(__dirname, 'nes.wasm'), log });
@@ -138,7 +152,7 @@ mgu.run({
             let info;
             if (err) info = err;
             else if (driving()) info = 'Parked only - the game waits while you drive (Settings: Parked only)';
-            else if (!lib.games.length) info = 'No games yet: copy .nes files to ' + romDir + ' (or into app/roms/ before a build)';
+            else if (!lib.games.length) info = 'No games: put .nes files in a folder "nes" on a USB stick, or copy them to ' + romDir;
             else info = lib.games.length + (lib.games.length === 1 ? ' game' : ' games') + '. In a game, BACK returns here and saves';
             put('BTN_PLAY', cur ? 'Continue: ' + cur.title : 'Continue');
             put('BTN_RESET', cur ? 'Restart: ' + cur.title : 'Restart');

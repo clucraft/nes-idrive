@@ -2,5 +2,6 @@
 *.png binary
 *.wasm binary
 *.tgz binary
+*.nes binary
 *.patch text eol=lf
 *.sh text eol=lf

@@ -1,8 +1,8 @@
 {
   "id": "clucraft_nes",
   "title": "NES",
-  "description": "NES games on the iDrive (FCEUmm emulator). No games included: it runs the .nes files you copy to it. Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves. No sound",
-  "version": "0.1.0",
+  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files are copied to the head unit, or read from a folder \"nes\" on a USB stick (experimental). Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves. No sound",
+  "version": "0.2.0",
   "vendor": "clucraft",
   "loggingId": "OAA6",
   "maxDiskUsage": 104857600,
@@ -16,7 +16,8 @@
     }
   },
   "config": {
-    "romDirs": []
+    "romDirs": [],
+    "usbRoots": ["/media", "/run/media"]
   },
   "screens": [
     {

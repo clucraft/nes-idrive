@@ -12,7 +12,9 @@ as the submodule vendor/libretro-fceumm; the frontend and the script that builds
 The app runs on the idrive7-apps kit (https://github.com/cauliflowermossgrape/idrive7-apps, MIT),
 whose runtime is packed with it.
 
-No games are included. The app runs .nes files its user supplies.
+Two small games come with the app, Snake and Pad Test (games.pack). They were written for it and
+are under the same licence; their source is in games/ of https://github.com/clucraft/nes-idrive.
+No other game is included: beyond these the app runs .nes files its user supplies.
 
 Nintendo Entertainment System and NES are trademarks of Nintendo. FCEUmm and this app are not
 affiliated with Nintendo or BMW.

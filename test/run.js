@@ -1,7 +1,8 @@
 'use strict';
 
 // NES app: the emulator (app/nes.wasm through nes-core.js) on a small test program made here,
-// the controller -> pad mapping (controls.js) and the games / saves on disk (library.js).
+// the controller -> pad mapping (controls.js), the games / saves on disk (library.js) and the two
+// games that come with the app (app/games/), played in the emulator.
 // Then the MGU Store's view of this repository: mgu-repo.json and the committed package in store/.
 // No SDK, head unit or game needed; runs on Node 8 (the head unit's) as on a current one:
 //   node test/run.js        (npm test; npm run test:node8 for Node 8)
@@ -13,8 +14,8 @@ const path = require('path');
 const zlib = require('zlib');
 const ROOT = path.join(__dirname, '..');
 const { Nes, BTN, isRom } = require(path.join(ROOT, 'app/nes-core'));
-const { Controls, TAP, GAP } = require(path.join(ROOT, 'app/controls'));
-const { Library, titleOf } = require(path.join(ROOT, 'app/library'));
+const { Controls, TAP, GAP, SEEN } = require(path.join(ROOT, 'app/controls'));
+const { Library, titleOf, openPack, usbFolders } = require(path.join(ROOT, 'app/library'));
 const { unpack } = require(path.join(ROOT, 'tools/tar'));
 const { spawnSync } = require('child_process');
 
@@ -57,6 +58,23 @@ function colour(f) {
     return [f.px[0], f.px[1], f.px[2]];
 }
 const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pad || 0); nes.run(); } return nes.frame(); };
+/** the picture after n more frames, as a copy (the core's own is only good until it runs again) */
+const shot = (nes, n, pad) => { const f = frames(nes, n, pad); return { w: f.w, h: f.h, px: new Uint8Array(f.px) }; };
+/** a copy of the tiles from column x, row y of the picture (8 x 8 pixels each), n of them in a row */
+const tiles = (f, x, y, n) => { const out = []; for (let r = y * 8; r < y * 8 + 8; r++) out.push(Buffer.from(f.px.buffer, f.px.byteOffset + (r * f.w + x * 8) * 4, n * 32)); return Buffer.concat(out); };
+/** the colour in the middle of the tile at column x, row y */
+const middle = (f, x, y) => { const i = ((y * 8 + 4) * f.w + x * 8 + 4) * 4; return [f.px[i], f.px[i + 1], f.px[i + 2]]; };
+/** the games that come with the app, and no others */
+const BUNDLED = ['Pad_Test.nes', 'Snake.nes'];
+/** a data pack as kit/tools/pack_data.py writes it */
+function writePack(file, files) {
+    const index = {}, blobs = [];
+    let off = 0;
+    Object.keys(files).forEach((n) => { const z = zlib.deflateRawSync(files[n]); index[n] = [off, z.length]; off += z.length; blobs.push(z); });
+    const ix = zlib.deflateRawSync(Buffer.from(JSON.stringify({ files: index, split: {} }))), len = Buffer.alloc(4);
+    len.writeUInt32LE(ix.length, 0);
+    fs.writeFileSync(file, Buffer.concat([Buffer.from('MGUPACK1'), len, ix].concat(blobs)));
+}
 
 (async () => {
     console.log('node ' + process.version);
@@ -130,6 +148,22 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
         c.raw(ev(10, 0, 0), true);
         assert.strictEqual(c.mask(), 0);
     });
+    await check('controls: a push or press that is over before the next frame still reaches the game, for ' + SEEN + ' frames', () => {
+        const c = mk();
+        c.raw(ev(10, 0, 0), true);
+        c.raw(ev(10, 1, 0), true); c.raw(ev(10, 0, 0), true);  // pressed and let go between two frames
+        for (let i = 0; i < SEEN; i++) assert.strictEqual(c.mask(), BTN.A, 'frame ' + i);
+        assert.strictEqual(c.mask(), 0);
+        c.raw(ev(10, 0, 1), true); c.raw(ev(10, 0, 0), true);  // and a push
+        for (let i = 0; i < SEEN; i++) assert.strictEqual(c.mask(), BTN.UP, 'frame ' + i);
+        assert.strictEqual(c.mask(), 0);
+        c.raw(ev(10, 0, 4), true); c.raw(ev(10, 0, 7), true);  // one direction, then another held on: the one held wins
+        assert.strictEqual(c.mask(), BTN.DOWN);
+        c.enable(false);
+        c.raw(ev(10, 1, 0), true); c.raw(ev(10, 0, 0), true);  // a press while the game is stopped is not kept for its start
+        c.enable(true);
+        assert.strictEqual(c.mask(), 0);
+    });
     await check('controls: each knob click is one tap (' + TAP + ' frames held, ' + GAP + ' let go); the first message only says where the knob stands', () => {
         const c = mk(), seq = () => { const s = []; for (let i = 0; i < 2 * (TAP + GAP) + 2; i++) s.push(c.mask()); return s; };
         c.raw(ev(65535, 0, 0), true);
@@ -175,31 +209,45 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
 
     /* ---------- games and saves ---------- */
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nes-test-'));
-    const deflate = (b) => zlib.deflateRawSync(b);
-    await check('library: games from the build\'s pack and from the data folder, by title', () => {
-        // a pack as kit/tools/pack_data.py writes it
-        const files = { 'Zebra Quest (USA).nes': rom, 'alpha_run.nes': rom, 'README.txt': Buffer.from('x') };
-        const index = {}, blobs = [];
-        let off = 0;
-        Object.keys(files).forEach((n) => { const z = deflate(files[n]); index[n] = [off, z.length]; off += z.length; blobs.push(z); });
-        const ix = deflate(Buffer.from(JSON.stringify({ files: index, split: {} }))), len = Buffer.alloc(4);
-        len.writeUInt32LE(ix.length, 0);
-        fs.writeFileSync(path.join(tmp, 'roms.pack'), Buffer.concat([Buffer.from('MGUPACK1'), len, ix].concat(blobs)));
+    const other = Buffer.concat([rom, Buffer.from('another')]);
+    await check('library: games from the app\'s packs and from the data folder, by title; a later place wins', () => {
+        writePack(path.join(tmp, 'games.pack'), { 'Snake.nes': rom, 'alpha_run.nes': rom });
+        writePack(path.join(tmp, 'roms.pack'), { 'Zebra Quest (USA).nes': rom, 'alpha_run.nes': other, 'README.txt': Buffer.from('x') });
         fs.mkdirSync(path.join(tmp, 'roms'));
         fs.writeFileSync(path.join(tmp, 'roms', 'Middle Game [!].NES'), rom);
+        fs.writeFileSync(path.join(tmp, 'roms', 'SNAKE.NES'), other);
         fs.writeFileSync(path.join(tmp, 'roms', 'notes.txt'), 'x');
-        const lib = new Library({ pack: path.join(tmp, 'roms.pack'), dirs: [path.join(tmp, 'roms'), path.join(tmp, 'none')], dataDir: tmp, log });
-        assert.deepStrictEqual(lib.scan().map((g) => g.title), ['alpha run', 'Middle Game', 'Zebra Quest']);
-        lib.games.forEach((g) => assert(lib.read(g).equals(rom), g.file + ' read back differs'));
+        const lib = new Library({ packs: [path.join(tmp, 'games.pack'), path.join(tmp, 'roms.pack'), path.join(tmp, 'no.pack')], dirs: [path.join(tmp, 'roms'), path.join(tmp, 'none')], dataDir: tmp, log });
+        assert.deepStrictEqual(lib.scan().map((g) => g.title), ['alpha run', 'Middle Game', 'SNAKE', 'Zebra Quest']);
+        assert.deepStrictEqual(lib.games.map((g) => lib.read(g).equals(other)), [true, false, true, false], 'the same name in a later pack or a folder was not the one read');
+        assert(lib.read(lib.games[1]).equals(rom) && lib.read(lib.games[3]).equals(rom));
         assert.strictEqual(titleOf('Some Game (Europe) (Rev 1) [b2].nes'), 'Some Game');
     });
+    await check('library: games in a folder "nes" on a USB stick are there while the stick is', () => {
+        const media = path.join(tmp, 'media'), mk = (p) => { p.split('/').reduce((d, part) => { const n = path.join(d, part); if (!fs.existsSync(n)) fs.mkdirSync(n); return n; }, media); };
+        fs.mkdirSync(media);
+        mk('STICK/nes'); mk('MUSIC/albums'); mk('OTHER/NES'); mk('OTHER/nes2');
+        fs.writeFileSync(path.join(media, 'STICK', 'nes', 'Stick Game.nes'), rom);
+        fs.writeFileSync(path.join(media, 'OTHER', 'NES', 'Other Game.nes'), rom);
+        fs.writeFileSync(path.join(media, 'MUSIC', 'nes'), 'a file, not a folder');
+        const names = ['nes', 'NES', 'Nes'], roots = [media, path.join(tmp, 'no-such-root')];
+        const found = usbFolders(roots, names);
+        assert.deepStrictEqual(found.dirs.map((d) => path.relative(media, d).replace(/\\/g, '/')).sort(), ['OTHER/NES', 'STICK/nes']);
+        assert.deepStrictEqual(found.errors, [], 'a stick without the folder, or no stick at all, is no error');
+        const lib = new Library({ packs: [], dirs: [], more: () => usbFolders(roots, names).dirs, dataDir: tmp, log });
+        assert.deepStrictEqual(lib.scan().map((g) => g.title), ['Other Game', 'Stick Game']);
+        assert(lib.read(lib.games[1]).equals(rom));
+        fs.unlinkSync(path.join(media, 'STICK', 'nes', 'Stick Game.nes'));
+        fs.rmdirSync(path.join(media, 'STICK', 'nes'));
+        assert.deepStrictEqual(lib.scan().map((g) => g.title), ['Other Game'], 'the stick is out: its games are still listed');
+    });
     await check('library: state, battery memory and the game played last are kept per game', () => {
-        const lib = new Library({ pack: path.join(tmp, 'roms.pack'), dirs: [path.join(tmp, 'roms')], dataDir: tmp, log });
+        const lib = new Library({ packs: [path.join(tmp, 'roms.pack')], dirs: [path.join(tmp, 'roms')], dataDir: tmp, log });
         const a = lib.scan()[0], b = lib.games[1];
         assert(lib.state(a) === null && lib.sram(a) === null && lib.last() === null);
         assert(lib.setState(a, Buffer.from('state-a')) && lib.setSram(b, Buffer.from('sram-b')));
         lib.setLast(b);
-        const again = new Library({ pack: path.join(tmp, 'roms.pack'), dirs: [path.join(tmp, 'roms')], dataDir: tmp, log });
+        const again = new Library({ packs: [path.join(tmp, 'roms.pack')], dirs: [path.join(tmp, 'roms')], dataDir: tmp, log });
         again.scan();
         assert.strictEqual(String(again.state(again.byId(a.id))), 'state-a');
         assert.strictEqual(String(again.sram(again.byId(b.id))), 'sram-b');
@@ -208,6 +256,70 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
         again.dropState(again.byId(a.id));
         assert(again.state(again.byId(a.id)) === null);
         assert(!fs.readdirSync(path.join(tmp, 'saves')).some((f) => /\.tmp$/.test(f)), 'a temporary file was left');
+    });
+
+    /* ---------- the games that come with the app (app/games/, built from games/ by games/build.sh) ---------- */
+    const bundled = (n) => fs.readFileSync(path.join(ROOT, 'app/games', n));
+    await check('games: app/games/ holds the two games written for the app, and nothing else to play', () => {
+        assert.deepStrictEqual(fs.readdirSync(path.join(ROOT, 'app/games')).filter((f) => !/^(README\.txt|\.packignore)$/.test(f)).sort(), BUNDLED);
+        BUNDLED.forEach((n) => assert(isRom(bundled(n)) && bundled(n).length === 16 + 16384 + 8192, n + ' is not a 16 KB cartridge'));
+        ['games/src/pad_test.s', 'games/src/snake.s', 'games/src/common.inc', 'games/src/nrom.cfg', 'games/mkchr.js', 'games/build.sh'].forEach((f) => assert(fs.existsSync(path.join(ROOT, f)), 'their source: ' + f));
+    });
+    await check('games: Pad Test lights each button while it is held, counts its presses, and its clock runs', () => {
+        assert(nes.load(bundled('Pad_Test.nes')), 'did not load');
+        nes.setCrop(0, 0, 0, 0);
+        const rows = { UP: 8, DOWN: 10, LEFT: 12, RIGHT: 14, SELECT: 16, START: 18, B: 20, A: 22 };
+        const lit = (f, b) => { const c = middle(f, 16, rows[b]); return c[1] > c[0] + 60 && c[1] > c[2] + 60; };       // green between its brackets
+        const count = (f, b) => tiles(f, 20, rows[b], 3);
+        const idle = shot(nes, 30);
+        Object.keys(rows).forEach((b) => assert(!lit(idle, b), b + ' is lit with nothing held'));
+        Object.keys(rows).forEach((b) => {
+            const held = shot(nes, 3, BTN[b]);
+            Object.keys(rows).forEach((o) => assert.strictEqual(lit(held, o), o === b, o + (o === b ? ' is not lit while held' : ' is lit while ' + b + ' is held')));
+            const after = shot(nes, 3);
+            assert(!lit(after, b), b + ' stays lit');
+            assert(!count(after, b).equals(count(idle, b)), b + ': a press did not count');
+            Object.keys(rows).forEach((o) => assert(o === b || rows[o] < rows[b] || count(after, o).equals(count(idle, o)), o + ' counted a press of ' + b));
+        });
+        const once = shot(nes, 1);
+        assert(count(once, 'A').equals(count(once, 'B')) && !count(once, 'A').equals(count(idle, 'A')), 'one press each: the counts differ');
+        shot(nes, 3, BTN.A);
+        assert(count(shot(nes, 3, BTN.A), 'A').equals(count(shot(nes, 3), 'A')) && !count(shot(nes, 1), 'A').equals(count(once, 'A')), 'held on: one press, not one a frame');
+        const clock = (f) => tiles(f, 13, 24, 7), t0 = shot(nes, 1);
+        assert(!clock(shot(nes, 70)).equals(clock(t0)), 'the clock stands');
+    });
+    await check('games: Snake starts on a push, turns, eats an apple, pauses, ends at the wall and starts again', () => {
+        assert(nes.load(bundled('Snake.nes')), 'did not load');
+        const green = (c) => c[1] > c[0] + 60 && c[1] > c[2] + 60, score = (f) => tiles(f, 16, 2, 3), best = (f) => tiles(f, 26, 2, 3);
+        const field = (f) => { const rows = []; for (let y = 5; y <= 26; y++) rows.push(tiles(f, 2, y, 28)); return Buffer.concat(rows); };
+        const ready = shot(nes, 30);
+        assert(green(middle(ready, 16, 15)) && green(middle(ready, 14, 15)) && !green(middle(ready, 17, 15)), 'the snake is not where a new game has it');
+        assert(field(shot(nes, 40)).equals(field(ready)), 'it moves before a button');
+        shot(nes, 2, BTN.RIGHT);                               // starts it; a step every 12 frames
+        let f = shot(nes, 108, BTN.DOWN);                      // nine steps down
+        assert(green(middle(f, 16, 24)) && green(middle(f, 16, 22)) && !green(middle(f, 16, 21)) && !green(middle(f, 16, 15)), 'it did not turn down, three long');
+        assert(score(f).equals(score(ready)), 'a score without an apple');
+        // the apple is where chance put it at the start: find it (red) and steer there
+        let apple = null;
+        for (let y = 5; y <= 26 && !apple; y++) for (let x = 2; x <= 29; x++) { const c = middle(f, x, y); if (c[0] > c[1] + 60 && c[0] > c[2] + 60) { apple = [x, y]; break; } }
+        assert(apple, 'no apple on the field');
+        const go = (b, n) => { for (let i = 0; i < n; i++) f = shot(nes, 12, BTN[b]); };
+        const dx = apple[0] - 16, dy = apple[1] - 24;
+        if (dx) go(dx < 0 ? 'LEFT' : 'RIGHT', Math.abs(dx));   // along its row to the apple's column,
+        else if (dy < 0) go('LEFT', 1);                        // (or round its own body, with the apple straight above)
+        if (dy) go(dy < 0 ? 'UP' : 'DOWN', Math.abs(dy));      // then up or down to it
+        if (!dx && dy < 0) go('RIGHT', 1);
+        assert(!score(f).equals(score(ready)), 'the apple at ' + apple + ' did not count');
+        const paused = shot(nes, 3, BTN.START);
+        assert(field(shot(nes, 40)).equals(field(paused)), 'it moves while paused');
+        shot(nes, 3, BTN.START);
+        assert(!field(shot(nes, 40, BTN.UP)).equals(field(paused)), 'it stands after the pause');
+        f = shot(nes, 400, BTN.UP);                            // into a wall
+        assert(field(shot(nes, 60)).equals(field(f)), 'it moves after the end');
+        assert(!best(f).equals(best(ready)) && best(f).equals(score(f)), 'the best score is not this game\'s');
+        shot(nes, 3, BTN.A);
+        f = shot(nes, 20);
+        assert(green(middle(f, 16, 15)) && score(f).equals(score(ready)) && !best(f).equals(best(ready)), 'no new game with the best score kept');
     });
 
     /* ---------- the MGU Store: mgu-repo.json and store/ (the Store's docs/PUBLISHING.md, "Repo tree") ---------- */
@@ -245,7 +357,7 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
         assert(relPath(output) && fs.existsSync(path.join(ROOT, output)), 'the build\'s output ' + output + ' is in the repository');
         assert.deepStrictEqual(fs.readdirSync(path.join(ROOT, entry.path)).filter((f) => /\.tgz$/.test(f)), [path.basename(output)], 'one package in store/');
     });
-    await check('store: the package is an OAP package of that id and version, without an SDK and without games', () => {
+    await check('store: the package is an OAP package of that id and version, without an SDK and without games of anyone\'s', () => {
         members = unpack(fs.readFileSync(path.join(ROOT, output)));
         assert(members.length > 50 && members.every((m) => m.name.indexOf('package/') === 0 && m.name.indexOf('..') < 0), 'its files are under package/');
         const bad = members.filter((m) => /node_modules|oap-sdk\/|roms\.pack$|\.nes$/i.test(m.name)).map((m) => m.name);
@@ -263,6 +375,13 @@ const frames = (nes, n, pad) => { for (let i = 0; i < n; i++) { nes.setPad(0, pa
         [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
             assert(inPkg(q[0]).equals(fs.readFileSync(path.join(ROOT, 'app', q[1] || q[0]))), 'app/' + (q[1] || q[0]) + ' changed since the package was built');
         });
+        // the games in it: the app's own two, as they are in app/games/
+        const packed = path.join(tmp, 'store-games.pack');
+        fs.writeFileSync(packed, inPkg('games.pack'));
+        const pack = openPack(packed);
+        assert(pack, 'games.pack is no data pack');
+        assert.deepStrictEqual(pack.names.slice().sort(), BUNDLED, 'the games in the package');
+        BUNDLED.forEach((n) => assert(pack.read(n).equals(bundled(n)), 'app/games/' + n + ' changed since the package was built'));
         const rt = JSON.parse(inPkg('kit/app-spec.json').toString());
         ['id', 'title', 'version', 'screens', 'settings', 'config'].forEach((k) => assert.deepStrictEqual(rt[k], spec[k], 'app/app.json "' + k + '" changed since the package was built'));
     });

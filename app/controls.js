@@ -14,6 +14,7 @@
  *
  * A tap holds its button for TAP frames and lets go for GAP frames, so turning the knob several
  * clicks gives that many presses (rapid fire). mask() is asked once for every frame the game runs.
+ * A push or press that is over before the game's next frame still reaches it, for SEEN frames.
  * setExternal() takes the buttons of another pad (a USB gamepad's helper, one day).
  */
 const { BTN } = require('./nes-core');
@@ -30,6 +31,7 @@ const BY_NAME = { a: BTN.A, b: BTN.B, start: BTN.START, select: BTN.SELECT, none
 const BAR = { BTN_SELECT: BTN.SELECT, BTN_START: BTN.START, BTN_B: BTN.B, BTN_A: BTN.A };
 const TAPPED = [BTN.A, BTN.B, BTN.START, BTN.SELECT];
 const TAP = 5, GAP = 4, QUEUE = 6;         // frames held, frames let go, taps waiting at most
+const SEEN = 2;                            // frames a push or press is held at least
 const STALE_MS = 1500, HMI_PRESS_MS = 500;
 
 class Controls {
@@ -41,6 +43,7 @@ class Controls {
         this.pos = null;                // knob counter
         this.dir = 0;                   // the D-pad button the push holds
         this.pressed = false;
+        this.dirSeen = 0; this.dirFrames = 0; this.pressFrames = 0;   // a push / press just begun: held for these frames at least
         this.msgT = 0; this.same = 0; this.lastMsg = '';
         this.cyclic = false;            // the car repeats unchanged messages (then a lost release is timed out)
         this.hmiPressT = -1e9;          // a press the HMI saw too (no controller gate)
@@ -75,9 +78,12 @@ class Controls {
             }
             this.pos = pos;
         }
-        this.dir = DIR[defl] || 0;
+        const dir = DIR[defl] || 0;
+        if (dir && dir !== this.dir && this.enabled) { this.dirSeen = dir; this.dirFrames = SEEN; }
+        this.dir = dir;
         const p = pushBtn === 1 || pushBtn === 2;
         if (p && !this.pressed && !gated) this.hmiPressT = t;
+        if (p && !this.pressed && this.enabled) this.pressFrames = SEEN;
         this.pressed = p;
     }
 
@@ -111,7 +117,12 @@ class Controls {
         if (this.live) {
             // a release lost on the way (UDP) is timed out when the car repeats its messages
             const stale = this.cyclic && this.now() - this.msgT > STALE_MS;
-            if (!stale) { m |= this.dir; if (this.pressed) m |= this._map('press', 'a'); }
+            if (!stale) {
+                m |= this.dir || (this.dirFrames > 0 ? this.dirSeen : 0);
+                if (this.pressed || this.pressFrames > 0) m |= this._map('press', 'a');
+            }
+            if (this.dirFrames > 0) this.dirFrames--;
+            if (this.pressFrames > 0) this.pressFrames--;
         }
         this.tap.forEach((s, b) => {
             if (s.hold > 0) { m |= b; if (--s.hold === 0) s.gap = GAP; } else if (s.gap > 0) s.gap--;
@@ -126,8 +137,8 @@ class Controls {
     /** game running or not (stopped: everything is let go, waiting taps are dropped) */
     enable(on) {
         this.enabled = !!on;
-        if (!on) this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; });
+        if (!on) { this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; }); this.dirFrames = this.pressFrames = 0; }
     }
 }
 
-module.exports = { Controls, BAR, TAP, GAP };
+module.exports = { Controls, BAR, TAP, GAP, SEEN };

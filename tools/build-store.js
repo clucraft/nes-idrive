@@ -3,7 +3,7 @@
  * The package the MGU Store installs (https://github.com/robertnisipeanu/mgu-store), with what
  * mgu-repo.json lists it by:
  *
- *   store/<id>@<version>.tgz   the app as the kit builds it, without an SDK and without games
+ *   store/<id>@<version>.tgz   the app as the kit builds it, without an SDK and without games of yours
  *   store/app.json             its id, version, title and description (from app/app.json)
  *   store/icon.png             its icon in the Store (app/icon.png)
  *
@@ -15,7 +15,8 @@
  * No BMW SDK is published: the kit's build puts one in node_modules/oap-sdk (the emulator's
  * placeholder, or BMW's from your head unit), and it is left out here whichever it is. The head unit
  * generates the module from a BMW app already on it when it installs the package. Games in
- * app/roms/ are left out too.
+ * app/roms/ are left out too: the only games in the package are the two that come with the app
+ * (app/games/, as games.pack).
  */
 const fs = require('fs');
 const path = require('path');
@@ -49,6 +50,7 @@ function build() {
     if (pkg.name !== APP_ID || pkg.version !== spec.version) throw new Error('the kit built ' + pkg.name + '@' + pkg.version + ', not ' + APP_ID + '@' + spec.version);
     const all = walk(src, '', []), files = all.filter((f) => !LEFT_OUT(f));
     if (files.indexOf('javascript/app.js') < 0 || files.indexOf('rhmiData/application.json') < 0) throw new Error('the kit\'s package in ' + src + ' is not complete');
+    if (files.indexOf('javascript/games.pack') < 0) throw new Error('the games of app/games/ are not in the kit\'s package');
     // the package says itself what it is for and under which licence (the kit writes "UNLICENSED" and no head unit)
     const meta = Object.assign({}, pkg, { license: LICENSE, mguHmi: HMI });
     const tgz = pack(files.map((f) => ({
@@ -66,7 +68,7 @@ function build() {
     const games = all.indexOf('javascript/roms.pack') >= 0 && fs.readdirSync(path.join(ROOT, 'app', 'roms')).filter((f) => /\.nes$/i.test(f)).length;
     console.log('build-store: store/' + name + ' (' + files.length + ' files, ' + Math.round(tgz.length / 1024) + ' KiB, sha256 ' +
         crypto.createHash('sha256').update(tgz).digest('hex').slice(0, 16) + '...)');
-    console.log('build-store: no SDK in it' + (games ? '; the ' + games + ' game(s) in app/roms/ are left out' : '') + '. Commit store/ to publish it.');
+    console.log('build-store: no SDK in it; the games of app/games/ are' + (games ? ', the ' + games + ' of yours in app/roms/ are not' : '') + '. Commit store/ to publish it.');
 }
 
 if (require.main === module) {

@@ -7,3 +7,8 @@ dist/
 # games are yours: none belong in git (app/roms/.gitignore says the same)
 *.nes
 *.NES
+# ... but for the two that come with the app, built from games/ (games/build.sh)
+!app/games/Pad_Test.nes
+!app/games/Snake.nes
+# what games/build.sh makes on the way
+games/obj/
