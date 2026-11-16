@@ -1,0 +1,47 @@
+{
+  "id": "clucraft-nes-loader",
+  "kind": "tool",
+  "version": "0.1.0",
+  "license": "GPL-2.0-or-later",
+  "title": "NES game loader",
+  "description": "For the app NES: send your own .nes games from a phone. \"Add games from a phone\" in the app shows a QR code; the phone, on the car Wi-Fi (wireless CarPlay or the hotspot), opens a page and picks the files. The page's port is open in the head unit's firewall only while that screen is up; the page runs as the NES app's own user and writes only into its games folder. Starts when the app asks, never at boot. Restart the head unit once after installing it.",
+  "requires": {
+    "mgu-deploy": "0.7.0"
+  },
+  "optional": true,
+  "uninstallable": true,
+  "mguHmi": [
+    "ID7"
+  ],
+  "files": [
+    { "path": "service.js", "from": "service.js", "mode": "0644" },
+    { "path": "page.js", "from": "page.js", "mode": "0644" },
+    { "path": "games.js", "from": "games.js", "mode": "0644" },
+    { "path": "nft.js", "from": "nft.js", "mode": "0644" },
+    { "path": "sockgroup.js", "from": "sockgroup.js", "mode": "0644" },
+    { "path": "check.js", "from": "check.js", "mode": "0644" },
+    { "path": "cleanup.js", "from": "cleanup.js", "mode": "0644" },
+    { "path": "LICENSE", "from": "LICENSE", "mode": "0644" },
+    { "path": "README.md", "from": "README.md", "mode": "0644" }
+  ],
+  "check": [
+    "check.js"
+  ],
+  "deactivate": [
+    "node",
+    "cleanup.js"
+  ],
+  "units": [
+    { "name": "clucraft-nes-loader.socket", "from": "systemd/clucraft-nes-loader.socket" },
+    { "name": "clucraft-nes-loader.service", "from": "systemd/clucraft-nes-loader.service" }
+  ],
+  "enable": [
+    { "unit": "clucraft-nes-loader.socket", "target": "sockets.target" }
+  ],
+  "recmgr": [
+    "clucraft-nes-loader"
+  ],
+  "restart": [
+    "clucraft-nes-loader.service"
+  ]
+}

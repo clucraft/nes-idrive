@@ -2,7 +2,9 @@
 
 // NES app: the emulator (app/nes.wasm through nes-core.js) on a small test program made here,
 // the controller -> pad mapping (controls.js), the games / saves on disk (library.js) and the two
-// games that come with the app (app/games/), played in the emulator.
+// games that come with the app (app/games/), played in the emulator. "Add games from a phone": the QR
+// code (qr.js) and the NES game loader (loader/) from the app's request to a game sent over HTTP, with a
+// stand-in for the head unit's firewall program.
 // Then the MGU Store's view of this repository: mgu-repo.json and the committed package in store/.
 // No SDK, head unit or game needed; runs on Node 8 (the head unit's) as on a current one:
 //   node test/run.js        (npm test; npm run test:node8 for Node 8)
@@ -18,6 +20,10 @@ const { Controls, TAP, GAP, SEEN } = require(path.join(ROOT, 'app/controls'));
 const { Library, titleOf, openPack, usbFolders } = require(path.join(ROOT, 'app/library'));
 const { unpack } = require(path.join(ROOT, 'tools/tar'));
 const { spawnSync } = require('child_process');
+const http = require('http');
+const { qr } = require(path.join(ROOT, 'app/qr'));
+const { Phone } = require(path.join(ROOT, 'app/phone'));
+const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')) };
 
 let failed = 0;
 const check = async (name, fn) => {
@@ -322,6 +328,192 @@ function writePack(file, files) {
         assert(green(middle(f, 16, 15)) && score(f).equals(score(ready)) && !best(f).equals(best(ready)), 'no new game with the best score kept');
     });
 
+    /* ---------- games from a phone: the code on the screen, the loader, the page ---------- */
+    await check('phone: a QR code is, module for module, what a reference encoder makes of the same text', () => {
+        // (from python-qrcode: byte mode, level L, the mask named; rows from the top, 8 modules a byte)
+        const known = [
+            ['A', 1, 0, 'fe5bfc13906eb6bb74a5dba2aec10507faafe01b00eff6258411979a22b1844368aa804aabfaddf05fb8bad76dd311aeb22305046feeab80'],
+            ['http://172.16.222.97:8493/0123456789abcdef0123', 3, 6, 'fe9e4bfc1334d06e8becbb741ae5dba521aec1167107faaaafe016c100da726a0dea5ce5bacde82828f6b3143d9360f063b56d8d7f61bb1a6125ca6db505c1ceafbfe55fc38bf945cf6036ff006dc463f8f5eb10410910ba933f85d6e88b6e895c270517665fed7aec00'],
+            ['m'.repeat(106), 5, 1, 'fea22223fc155555506e955554bb74eeeee5dbaa22222ec155555507faaaaaafe015555500e6e8888f9e46eeeedb7da555542a5bd5555bafb08888b4509eeeedb6cdd55542a3015555ba03e8888b4689eeeedb418d55542a8355555ba5f08888b4746eeeedb69a555542ba215555ba7ac8888b4222eeeedb7e8d55542a52d5555bacf48888fc006eeee477f8d5552ab05d555719ba48889fd5d2eeeea76ead55512b0515555e8fe88888a480'],
+        ];
+        known.forEach((k) => {
+            const q = qr(k[0], { mask: k[2] });
+            assert(q.version === k[1] && q.size === 17 + 4 * k[1] && q.modules.length === q.size * q.size, 'version ' + q.version + ' for ' + k[0].slice(0, 20));
+            const bytes = Buffer.alloc(Math.ceil(q.modules.length / 8));
+            q.modules.forEach((d, i) => { if (d) bytes[i >> 3] |= 0x80 >> (i & 7); });
+            assert.strictEqual(bytes.toString('hex'), k[3], 'the code of ' + k[0].slice(0, 30));
+        });
+        const best = qr('http://172.16.222.97:8493/0123456789abcdef0123/');
+        assert(best.version === 3 && best.mask >= 0 && best.mask < 8, 'the page\'s address is a version 3 code');
+        assert.throws(() => qr('n'.repeat(107)), /too long/);
+    });
+    const game = bundled('Snake.nes');
+    const spec0 = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/app.json'), 'utf8'));
+    await check('loader: a name is made safe; what is no NES game is refused', () => {
+        const names = { 'Super Game (USA).nes': 'Super Game (USA).nes', '../../etc/passwd': null, '../../evil.nes': 'evil.nes', 'C:\\roms\\Zelda.NES': 'Zelda.nes', '.hidden.nes': 'hidden.nes',
+            '   .nes': null, 'game.zip': null, 'a\u0000b\n.nes': 'a_b_.nes', '': null, 'G\u00e4nse & Co [!].nes': 'G_nse & Co [!].nes' };
+        Object.keys(names).forEach((n) => assert.strictEqual(loader.games.safeName(n), names[n], JSON.stringify(n)));
+        assert(loader.games.safeName('x'.repeat(300) + '.nes').length <= 80);
+        assert.strictEqual(loader.games.refuse(game), null);
+        assert(/too small/.test(loader.games.refuse(game.slice(0, 5000))) && /not an NES game/.test(loader.games.refuse(Buffer.alloc(30000, 7))));
+        assert(/bigger/.test(loader.games.refuse(Buffer.concat([game.slice(0, 16), Buffer.alloc(loader.games.MAX_GAME)]))));
+    });
+    await check('loader: a game goes into the games folder whole, under its safe name, and out again', () => {
+        const dir = path.join(tmp, 'loader-games');
+        const saved = loader.games.save(dir, '../My Game.NES', game);
+        assert.deepStrictEqual(saved, { name: 'My Game.nes', size: game.length, replaced: false });
+        assert(fs.readFileSync(path.join(dir, 'My Game.nes')).equals(game));
+        assert.strictEqual(loader.games.save(dir, 'my game.nes', game).replaced, true, 'the same name in other letters is the same game');
+        assert.deepStrictEqual(fs.readdirSync(dir), ['my game.nes'], 'one file, and none half written');
+        assert.throws(() => loader.games.save(dir, 'notes.txt', game), (e) => e.refused === true);
+        assert.throws(() => loader.games.save(dir, 'broken.nes', Buffer.alloc(20000)), (e) => e.refused === true && /not an NES game/.test(e.message));
+        if (process.platform !== 'win32') {
+            // a link someone left under the game's name is replaced, never written through
+            const outside = path.join(tmp, 'outside.txt');
+            fs.writeFileSync(outside, 'untouched');
+            fs.symlinkSync(outside, path.join(dir, 'Trap.nes'));
+            loader.games.save(dir, 'Trap.nes', game);
+            assert.strictEqual(fs.readFileSync(outside, 'utf8'), 'untouched');
+            assert(fs.lstatSync(path.join(dir, 'Trap.nes')).isFile());
+        }
+        assert.deepStrictEqual(loader.games.list(dir).map((g) => g.name).filter((n) => n !== 'Trap.nes'), ['my game.nes']);
+        assert(loader.games.remove(dir, 'MY GAME.nes') && !loader.games.remove(dir, 'my game.nes') && !loader.games.remove(dir, '../outside.txt'));
+    });
+    await check('loader: the firewall listing is read as the head unit prints it; a rule names one interface, the port and our mark', () => {
+        const listing = ['table ip filter { # handle 1', '\tchain INPUT { # handle 1', '\t\ttype filter hook input priority filter; policy drop;',
+            '\t\tiifname "wlan_bridge" tcp dport 8470 accept comment "mgu-updater-web" # handle 77',
+            '\t\tiifname "wlan_bridge" tcp dport 8493 accept comment "clucraft-nes-loader" # handle 91', '\t\tct state established,related accept # handle 5', '\t}',
+            '\tchain OUTPUT { # handle 2', '\t\ttype filter hook output priority filter; policy drop;', '\t}', '\tchain helper { # handle 3', '\t\ttcp dport 22 accept # handle 12', '\t}', '}',
+            'table inet mgu_uplink { # handle 4', '\tchain in { # handle 1', '\t\ttype filter hook input priority 10; policy accept;', '\t}', '}'].join('\n');
+        assert.deepStrictEqual(loader.nft.chains(listing), [
+            { family: 'ip', table: 'filter', chain: 'INPUT', hook: 'input', mine: ['91'] }, { family: 'ip', table: 'filter', chain: 'OUTPUT', hook: 'output', mine: [] },
+            { family: 'ip', table: 'filter', chain: 'helper', hook: null, mine: [] }, { family: 'inet', table: 'mgu_uplink', chain: 'in', hook: 'input', mine: [] }]);
+        assert.deepStrictEqual(loader.nft.rulesFor('input', ['wlan_bridge', 'x"; drop'], 8493).map((r) => r.join(' ')), ['iifname "wlan_bridge" tcp dport 8493 accept comment "clucraft-nes-loader"']);
+        assert.deepStrictEqual(loader.nft.rulesFor('output', ['uap0'], 8493).map((r) => r.join(' ')), ['oifname "uap0" tcp sport 8493 accept comment "clucraft-nes-loader"']);
+        assert.deepStrictEqual(loader.nft.rulesFor('forward', ['uap0'], 8493), []);
+    });
+    if (process.platform === 'win32') console.log('skip loader: the service with a firewall and the app (a head unit runs Linux: these need its kind of sockets and a shell)');
+    else {
+        // the head unit in small: an app's folder as MainApp lays it out, and a firewall that drops what no rule accepts
+        const oap = path.join(tmp, 'oap'), appRoot = path.join(oap, 'oap_12345'), state = path.join(tmp, 'nft.json'), nftProgram = path.join(tmp, 'nft');
+        [oap, appRoot, path.join(appRoot, 'source'), path.join(appRoot, 'data'), path.join(oap, 'oap_12201'), path.join(oap, 'oap_12201', 'source')].forEach((d) => fs.mkdirSync(d));
+        fs.writeFileSync(path.join(oap, 'oap_12201', 'source', 'package.json'), JSON.stringify({ name: 'mainapp' }));
+        const ruleset = () => JSON.parse(fs.readFileSync(state, 'utf8'));
+        const rules = (family, table, chain) => ruleset().tables.find((t) => t.family === family && t.name === table).chains.find((c) => c.name === chain).rules.map((r) => r.text);
+        const fresh = () => fs.writeFileSync(state, JSON.stringify({ next: 100, tables: [
+            { family: 'ip', name: 'filter', chains: [{ name: 'INPUT', hook: 'input', policy: 'drop', rules: [{ text: 'ct state established,related accept', handle: 5 }] }, { name: 'OUTPUT', hook: 'output', policy: 'drop', rules: [] }, { name: 'side', rules: [] }] },
+            { family: 'inet', name: 'mgu_uplink', chains: [{ name: 'in', hook: 'input', rules: [{ text: 'iifname "vethuplink" drop', handle: 9 }] }, { name: 'fwd', hook: 'forward', rules: [] }] },
+            { family: 'ip6', name: 'filter', chains: [{ name: 'INPUT', hook: 'input', rules: [] }] }] }));
+        fs.writeFileSync(nftProgram, '#!/bin/sh\nFAKE_NFT_STATE="' + state + '" exec "' + process.execPath + '" "' + path.join(ROOT, 'test', 'fake-nft.js') + '" "$@"\n');
+        fs.chmodSync(nftProgram, 0o755);
+        const mark = 'comment "clucraft-nes-loader"';
+        await check('loader: the port is opened in every chain packets come in and go out through, once, and closed without a trace', () => {
+            fresh();
+            let r = loader.nft.open(['wlan_bridge'], 8493, { program: nftProgram });
+            assert(r.changed && r.chains === 3 && !r.errors.length, JSON.stringify(r));
+            assert.deepStrictEqual(rules('ip', 'filter', 'INPUT'), ['iifname "wlan_bridge" tcp dport 8493 accept ' + mark, 'ct state established,related accept'], 'our rule is first: before what drops');
+            assert.deepStrictEqual(rules('ip', 'filter', 'OUTPUT'), ['oifname "wlan_bridge" tcp sport 8493 accept ' + mark]);
+            assert.deepStrictEqual(rules('inet', 'mgu_uplink', 'in'), ['iifname "wlan_bridge" tcp dport 8493 accept ' + mark, 'iifname "vethuplink" drop']);
+            assert(!rules('ip', 'filter', 'side').length && !rules('inet', 'mgu_uplink', 'fwd').length && !rules('ip6', 'filter', 'INPUT').length, 'a chain that is not on the way got a rule');
+            r = loader.nft.open(['wlan_bridge'], 8493, { program: nftProgram, last: r.signature });
+            assert(!r.changed && r.chains === 3 && rules('ip', 'filter', 'INPUT').length === 2, 'asked again: rules were added again');
+            r = loader.nft.open(['wlan_bridge', 'uap0'], 8493, { program: nftProgram, last: r.signature });
+            assert(r.changed && !r.errors.length);
+            assert.deepStrictEqual(rules('ip', 'filter', 'INPUT'), ['iifname "wlan_bridge" tcp dport 8493 accept ' + mark, 'iifname "uap0" tcp dport 8493 accept ' + mark, 'ct state established,related accept'], 'a second interface');
+            assert.strictEqual(loader.nft.shut({ program: nftProgram }), 6);
+            assert.deepStrictEqual([rules('ip', 'filter', 'INPUT'), rules('ip', 'filter', 'OUTPUT'), rules('inet', 'mgu_uplink', 'in')], [['ct state established,related accept'], [], ['iifname "vethuplink" drop']], 'the firewall is not as it was');
+            assert.strictEqual(loader.nft.shut({ program: nftProgram }), 0);
+            assert.strictEqual(loader.nft.open(['wlan_bridge'], 8493, { program: path.join(tmp, 'no-such-nft') }).errors.length, 1, 'no nft: an error to show, nothing thrown');
+        });
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const until = async (what, fn) => { for (let i = 0; i < 100; i++) { if (fn()) return; await sleep(50); } throw new Error('never: ' + what); };
+        const request = (method, address, body) => new Promise((resolve, reject) => {
+            const u = require('url').parse(address);
+            const r = http.request({ method, hostname: u.hostname, port: u.port, path: u.path }, (m) => { const parts = []; m.on('data', (d) => parts.push(d)); m.on('end', () => resolve({ status: m.statusCode, type: m.headers['content-type'], body: Buffer.concat(parts).toString() })); });
+            r.on('error', reject);
+            r.end(body);
+        });
+        const socket = path.join(tmp, 'loader.sock');
+        const said = [];
+        const service = loader.service.createService({ listen: socket, oapDir: oap, port: 18493, interfaces: ['lo'], nft: nftProgram, asSelf: true, exit: false, refreshMs: 100, idleMs: 1e9, log: (s) => said.push(s) });
+        const phone = new Phone({ socket, log });
+        try {
+            await check('loader: without the NES app on the head unit there is no page; without the loader the app says it is missing', async () => {
+                phone.open();
+                await until('an answer', () => phone.state.step === 'failed');
+                assert(/not installed/.test(phone.state.error), phone.state.error);
+                phone.close();
+                const lost = new Phone({ socket: path.join(tmp, 'no-loader.sock'), log });
+                lost.open();
+                await until('missing', () => lost.state.step === 'missing');
+                lost.close();
+                assert.strictEqual(lost.state.step, 'off');
+            });
+            fs.writeFileSync(path.join(appRoot, 'source', 'package.json'), JSON.stringify({ name: 'clucraft_nes', version: spec0.version }));
+            let base = null;
+            await check('loader: the app asks, and gets a page on the car Wi-Fi behind an address nobody can guess, its port open in the firewall', async () => {
+                fresh();
+                phone.open();
+                await until('the page', () => phone.state.step === 'open' && phone.state.page.url);
+                base = phone.state.page.url;
+                assert(/^http:\/\/127\.0\.0\.1:18493\/[0-9a-f]{20}\/$/.test(base), base);
+                assert.strictEqual(qr(base).version, 3, 'the address fits a small code');
+                await until('the rules', () => rules('ip', 'filter', 'INPUT').length === 2);
+                assert.deepStrictEqual(rules('ip', 'filter', 'INPUT')[0], 'iifname "lo" tcp dport 18493 accept ' + mark);
+                let r = null;
+                for (let i = 0; i < 40 && !r; i++) { r = await request('GET', base).catch(() => null); if (!r) await sleep(50); }
+                assert(r && r.status === 200 && /^text\/html/.test(r.type) && /Choose games/.test(r.body), 'the page: ' + (r && r.status));
+                assert.strictEqual((await request('GET', base.slice(0, -1))).status, 302);
+                for (const wrong of ['http://127.0.0.1:18493/', base.replace(/[0-9a-f]\/$/, 'x/'), base.replace(/\/$/, 'ff/'), 'http://127.0.0.1:18493/' + '0'.repeat(20) + '/games']) {
+                    assert.strictEqual((await request('GET', wrong)).status, 404, wrong);
+                }
+            });
+            await check('loader: a game sent to the page is in the app\'s games folder and on the app\'s screen; what is no game is not', async () => {
+                const roms = path.join(appRoot, 'data', 'roms');
+                let r = await request('POST', base + 'games?name=' + encodeURIComponent('../../Sent from a phone (v1).nes'), game);
+                assert.deepStrictEqual([r.status, JSON.parse(r.body)], [200, { ok: true, name: 'Sent from a phone (v1).nes', size: game.length, replaced: false }]);
+                assert(fs.readFileSync(path.join(roms, 'Sent from a phone (v1).nes')).equals(game));
+                r = await request('POST', base + 'games?name=notes.txt', game);
+                assert(r.status === 400 && JSON.parse(r.body).ok === false);
+                r = await request('POST', base + 'games?name=broken.nes', Buffer.alloc(30000, 3));
+                assert(r.status === 400 && /not an NES game/.test(JSON.parse(r.body).error));
+                r = await request('POST', base + 'games?name=huge.nes', Buffer.concat([game.slice(0, 16), Buffer.alloc(loader.games.MAX_GAME)])).catch((e) => ({ status: 413, body: e.code }));
+                assert.strictEqual(r.status, 413, 'more than the app reads is cut off');
+                assert.deepStrictEqual(fs.readdirSync(roms), ['Sent from a phone (v1).nes'], 'the games folder');
+                assert.deepStrictEqual(fs.readdirSync(path.join(appRoot, 'data')), ['roms'], 'nothing beside the games folder');
+                assert.deepStrictEqual(JSON.parse((await request('GET', base + 'games')).body), { games: [{ name: 'Sent from a phone (v1).nes', size: game.length }] });
+                await until('the app hearing of it', () => (phone.state.page.saved || []).length >= 3);
+                const heard = phone.state.page.saved;
+                assert(heard[0].name === 'Sent from a phone (v1).nes' && !heard[0].refused && heard[1].refused && heard[2].refused, JSON.stringify(heard));
+                // the app finds it as any game in its folder
+                const lib = new Library({ packs: [], dirs: [roms], dataDir: tmp, log });
+                assert.deepStrictEqual(lib.scan().map((g) => g.title), ['Sent from a phone']);
+                assert.strictEqual((await request('DELETE', base + 'games?name=' + encodeURIComponent('sent from a phone (v1).nes'))).status, 200);
+                assert.deepStrictEqual(fs.readdirSync(roms), []);
+            });
+            await check('loader: when the app leaves the screen the page is gone, and the firewall is as it was', async () => {
+                phone.close();
+                await until('the rules gone', () => rules('ip', 'filter', 'INPUT').length === 1 && !rules('ip', 'filter', 'OUTPUT').length && rules('inet', 'mgu_uplink', 'in').length === 1);
+                await until('the page gone', () => service.status().page.open === false);
+                let r = 'answered';
+                for (let i = 0; i < 40 && r === 'answered'; i++) { r = await request('GET', base).then(() => 'answered', (e) => e.code); if (r === 'answered') await sleep(50); }
+                assert.strictEqual(r, 'ECONNREFUSED', 'the page still answers');
+                // and when the app goes without a word (it crashed): the same
+                const gone = new Phone({ socket, log });
+                gone.open();
+                await until('a page again', () => gone.state.step === 'open' && rules('ip', 'filter', 'INPUT').length === 2);
+                assert.notStrictEqual(gone.state.page.url, base, 'the same address twice');
+                gone.conn.destroy();
+                gone.wanted = false;
+                await until('the rules gone again', () => rules('ip', 'filter', 'INPUT').length === 1);
+                assert(said.some((l) => /page closed: the app left/.test(l)), said.join(' | '));
+            });
+        } finally {
+            phone.close();
+            service.stop(0);
+        }
+    }
+
     /* ---------- the MGU Store: mgu-repo.json and store/ (the Store's docs/PUBLISHING.md, "Repo tree") ---------- */
     const json = (rel) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
     const SEMVER = /^\d+\.\d+\.\d+$/, relPath = (p) => typeof p === 'string' && !!p && !path.isAbsolute(p) && p.split('/').indexOf('..') < 0;
@@ -372,7 +564,7 @@ function writePack(file, files) {
     });
     await check('store: the package holds this app/ (else: npm run build:store)', () => {
         const inPkg = (n) => { const m = members.find((x) => x.name === 'package/javascript/' + n); assert(m, n + ' is not in the package'); return m.data; };
-        [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
+        [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['phone.js'], ['qr.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
             assert(inPkg(q[0]).equals(fs.readFileSync(path.join(ROOT, 'app', q[1] || q[0]))), 'app/' + (q[1] || q[0]) + ' changed since the package was built');
         });
         // the games in it: the app's own two, as they are in app/games/
@@ -384,6 +576,34 @@ function writePack(file, files) {
         BUNDLED.forEach((n) => assert(pack.read(n).equals(bundled(n)), 'app/games/' + n + ' changed since the package was built'));
         const rt = JSON.parse(inPkg('kit/app-spec.json').toString());
         ['id', 'title', 'version', 'screens', 'settings', 'config'].forEach((k) => assert.deepStrictEqual(rt[k], spec[k], 'app/app.json "' + k + '" changed since the package was built'));
+    });
+    await check('store: the NES game loader is listed as a tool the Store can pack: its files and units are there, its hooks among them', () => {
+        const repo = json('mgu-repo.json');
+        assert(Array.isArray(repo.tools) && repo.tools.length === 1, 'one tool');
+        const tool = repo.tools[0], c = json(path.join(tool.path, 'component.json'));
+        assert(/^[a-z0-9][a-z0-9_-]{0,63}$/.test(tool.id) && tool.id !== spec.id && relPath(tool.path) && tool.build === undefined, 'its entry');
+        assert(c.id === tool.id && c.kind === 'tool' && SEMVER.test(c.version) && c.build === undefined, 'component.json names ' + tool.id + ', a tool with a version and no build step');
+        assert.strictEqual(c.version, loader.service.VERSION, 'the service says another version than component.json');
+        assert(tool.optional === true && tool.uninstallable === true && Array.isArray(tool.mguHmi), 'optional, removable, for named head units');
+        assert(Object.keys(c.requires).every((k) => k !== c.id && SEMVER.test(c.requires[k])) && c.requires['mgu-deploy'], 'requires the deploy tool its "deactivate" needs');
+        const inFolder = (rel) => relPath(rel) && fs.existsSync(path.join(ROOT, tool.path, rel));
+        c.files.forEach((f) => assert(relPath(f.path) && /^[0-7]{3,4}$/.test(f.mode) && inFolder(f.from || f.path), 'file ' + JSON.stringify(f)));
+        c.units.forEach((u) => assert(/^[A-Za-z0-9@_.-]+\.(service|socket)$/.test(u.name) && inFolder(u.from || u.name), 'unit ' + JSON.stringify(u)));
+        const paths = c.files.map((f) => f.path), units = c.units.map((u) => u.name);
+        // every .js the service loads is installed with it
+        fs.readdirSync(path.join(ROOT, tool.path)).filter((f) => /\.js$/.test(f)).forEach((f) => assert(paths.indexOf(f) >= 0, f + ' is not among the files'));
+        assert(paths.indexOf(c.check[0]) >= 0 && c.deactivate[0] === 'node' && paths.indexOf(c.deactivate[1]) >= 0, 'check and deactivate are files of the tool');
+        c.enable.forEach((e) => assert(units.indexOf(e.unit) >= 0, 'enabled: ' + e.unit));
+        c.restart.forEach((u) => assert(units.indexOf(u) >= 0, 'restarted: ' + u));
+        assert(c.recmgr.every((n) => /^[A-Za-z0-9:._+@-]+$/.test(n)));
+        // the units run what the Store installs, where it installs it
+        const unitText = (n) => fs.readFileSync(path.join(ROOT, tool.path, c.units.find((u) => u.name === n).from), 'utf8');
+        const svc = unitText(tool.id + '.service'), sock = unitText(tool.id + '.socket');
+        ['service.js', 'cleanup.js'].forEach((f) => assert(svc.indexOf('/var/opt/' + tool.id + '/current/' + f) >= 0, 'the service unit runs ' + f));
+        assert(/^LimitCORE=1$/m.test(svc) && !/^WantedBy=/m.test(svc), 'the service: no core files, and not started at boot');
+        assert(sock.indexOf('ListenStream=' + require(path.join(ROOT, 'app/phone')).SOCKET) >= 0 && /^SocketMode=0600$/m.test(sock), 'the socket is the one the app asks at, root\'s alone until sockgroup.js opens it to the app');
+        assert.strictEqual(spec.config.loaderSocket, require(path.join(ROOT, 'app/phone')).SOCKET);
+        assert.strictEqual(require(path.join(ROOT, 'loader/games')).APP, spec.id, 'the loader looks for another app');
     });
     await check('store: the on-unit build passes with only the files an install downloads, and says what is wrong without the package', () => {
         const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'nes-store-'));

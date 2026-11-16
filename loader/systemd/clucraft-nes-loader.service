@@ -1,0 +1,32 @@
+# Part of nes-idrive (GPL-2.0-or-later): the NES game loader
+[Unit]
+Description=NES game loader: a page on the car Wi-Fi that takes games for the NES app from a phone
+RequiresMountsFor=/var/opt
+# Started by the NES app's connection to the socket, never at boot; it ends by itself two minutes after the
+# app is gone. No unit of the head unit waits for it or is ordered after it.
+Requires=clucraft-nes-loader.socket
+After=clucraft-nes-loader.socket
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+# root, for two things: the page's port in the firewall (nft) while the page is open, and starting the page
+# itself as the NES app's own user. The page (page.js) is the process that listens on the car Wi-Fi.
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/node /var/opt/clucraft-nes-loader/current/service.js
+# however it ended (stopped, crashed, killed): the firewall as it was
+ExecStopPost=-/usr/bin/node /var/opt/clucraft-nes-loader/current/cleanup.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=8
+# small and out of the way of the car's own programs
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+# (two Node.js processes, and a game of up to 8 MB on its way through)
+MemoryLimit=192M
+TasksMax=64
+# no core file goes to the head unit's crash handler, so a crash here restarts this service and nothing else
+LimitCORE=1
+StandardOutput=journal
+StandardError=journal

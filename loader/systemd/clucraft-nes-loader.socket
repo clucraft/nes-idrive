@@ -1,0 +1,19 @@
+# Part of nes-idrive (GPL-2.0-or-later): the NES game loader
+[Unit]
+Description=NES game loader: where the NES app asks for its phone page
+# (sockgroup.js below is in /var/opt, and looks for the NES app there)
+RequiresMountsFor=/var/opt
+
+[Socket]
+# A connection from the NES app starts clucraft-nes-loader.service; nothing of the loader runs before that,
+# at boot included. systemd makes the socket root's alone; sockgroup.js then opens it to the NES app's own
+# group (0660), and to no other app. The file goes when the socket stops (an uninstall).
+ListenStream=/run/clucraft-nes-loader.sock
+SocketMode=0600
+RemoveOnStop=yes
+ExecStartPost=-/bin/sh -c 'ulimit -c 1; exec /usr/bin/node /var/opt/clucraft-nes-loader/current/sockgroup.js'
+# (no core file from that command: the head unit restarts for a crash of a program it does not know)
+LimitCORE=1
+
+[Install]
+WantedBy=sockets.target

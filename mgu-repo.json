@@ -16,5 +16,14 @@
         "shared": ["LICENSE", "NOTICE"]
       }
     }
+  ],
+  "tools": [
+    {
+      "id": "clucraft-nes-loader",
+      "path": "loader",
+      "optional": true,
+      "uninstallable": true,
+      "mguHmi": ["ID7"]
+    }
   ]
 }

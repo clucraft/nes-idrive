@@ -12,9 +12,12 @@
  * Screens:
  *   MAIN  the main menu, an HMI list: Continue, Restart, the games, every setting.
  *   GAME  the game on the whole screen ("chrome": false). BACK (the HMI's own) returns to the menu.
+ *   ADD   "Add games from a phone": a QR code for the page the NES game loader opens on the car Wi-Fi
+ *         (phone.js, qr.js; loader/ in the repository), and what came in.
  *
- * Games are .nes files (library.js): app/roms/ on the PC goes into the app at build time, and
- * <the app's data folder>/roms/ on the head unit is read as well. None come with the app.
+ * Games are .nes files (library.js): two come with the app (app/games/); your own are in
+ * <the app's data folder>/roms/ on the head unit (copied there, or sent from a phone), in a folder
+ * "nes" on a USB stick, or packed into the app from app/roms/ by a build on a PC.
  *
  * Controls (controls.js): push the controller for the D-pad, press it for A, turn it right for B and
  * left for Start; Select, Start, B and A are also buttons on the touchscreen, beside the picture.
@@ -31,6 +34,8 @@ const Parked = require('./kit/parked');
 const { Nes } = require('./nes-core');
 const { Controls } = require('./controls');
 const { Library, mkdirp, usbFolders } = require('./library');
+const { Phone } = require('./phone');
+const { qr } = require('./qr');
 
 const W = 1600, H = 520, IMG = 1;
 const SLOTS = 10;                                   // game buttons in the menu (app.json BTN_ROM_0..9), a page of them
@@ -38,7 +43,7 @@ const BAR = ['BTN_SELECT', 'BTN_START', 'BTN_B', 'BTN_A'];
 const MAX_STEP = 6;                                 // frames run at once at most, to catch up
 const KEEP_MS = 30000;                              // while playing: battery memory and state saved this often
 const NAMES = { a: 'A', b: 'B', start: 'Start', select: 'Select' };
-const C = { bg: '#000000', text: '#e8eaed', dim: '#8c939c', key: '#ffffff', btn: '#1a1e24', edge: '#4a525c', lit: '#c8102e' };
+const C = { bg: '#000000', text: '#e8eaed', dim: '#8c939c', key: '#ffffff', btn: '#1a1e24', edge: '#4a525c', lit: '#c8102e', good: '#7ddc8a', bad: '#ff8f8f', paper: '#ffffff', ink: '#000000' };
 /** milliseconds on a monotonic clock (the wall clock can jump: GPS / network time sync) */
 function mono() { const t = process.hrtime(); return t[0] * 1000 + t[1] / 1e6; }
 
@@ -313,6 +318,76 @@ mgu.run({
             return ui.image('GAME_GFX', cv);
         }
         ctx.loop('GAME', 60, render);
+
+        /* ---------- games from a phone: the code to scan, and what came in ---------- */
+        const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log });
+        let drawn = null;                // what the ADD screen last showed
+        ui.onClick('BTN_ADD', () => ui.open('ADD'));
+        ui.onVisible((name, on) => {
+            if (name !== 'ADD') return;
+            drawn = null;
+            if (!on) { phone.close(); lib.scan(); menu(); }
+        });
+        /** a QR code as dark runs on white paper, as big as fits a square of `side` at x, y */
+        function code(cv, text, x, y, side) {
+            const q = qr(text), k = Math.max(1, Math.floor(side / (q.size + 8))), at = Math.round((side - q.size * k) / 2);
+            cv.fillRect(x, y, side, side, C.paper);
+            for (let row = 0; row < q.size; row++) {
+                for (let col = 0; col < q.size; col++) {
+                    if (!q.modules[row * q.size + col]) continue;
+                    let end = col;
+                    while (end + 1 < q.size && q.modules[row * q.size + end + 1]) end++;
+                    cv.fillRect(x + at + col * k, y + at + row * k, (end - col + 1) * k, k, C.ink);
+                    col = end;
+                }
+            }
+        }
+        function addScreen() {
+            // the page is open while this screen is up and the car stands
+            const wait = driving();
+            if (wait) phone.close(); else phone.open();
+            const s = phone.state, page = s.page;
+            const now = JSON.stringify([wait, s]);
+            if (now === drawn) return null;
+            drawn = now;
+            const cv = ctx.canvas(W, H).clear(C.bg);
+            const lines = (list, x, y, size, colour, step) => list.forEach((t, i) => cv.text(t, x, y + i * (step || size + 14), size, colour, { literal: true }));
+            if (wait) {
+                cv.text('Parked only', 80, 150, 44, C.text, { font: 'bold' });
+                lines(['The code to scan shows when the car stands.', 'Settings: Parked only.'], 80, 220, 30, C.dim);
+            } else if (s.step === 'open' && page.url) {
+                code(cv, page.url, 60, 40, 440);
+                cv.text('Scan with your phone', 560, 86, 44, C.text, { font: 'bold' });
+                lines(['1   The phone on the car\'s Wi-Fi (wireless CarPlay, or its hotspot)',
+                    '2   Scan the code with the camera and pick your .nes files',
+                    '3   BACK when you are done: the games are in the menu'], 560, 146, 28, C.dim, 44);
+                cv.text(fit(cv, page.url, 24, null, 900), 560, 290, 24, C.dim, { literal: true });
+                const recent = (page.saved || []).slice(-4);
+                recent.forEach((g, i) => {
+                    const y = 346 + i * 40, bad = !!g.refused;
+                    cv.fillRect(560, y - 20, 16, 16, bad ? C.bad : C.good);
+                    cv.text(fit(cv, bad ? g.name + ': ' + g.refused : g.name + (g.removed ? ' removed' : g.replaced ? ' replaced' : ' added'), 28, null, 880), 592, y, 28, bad ? C.bad : C.good, { literal: true });
+                });
+                if (!recent.length && /^failed/.test(page.firewall || '')) lines(['The head unit\'s firewall could not be opened:', fit(cv, page.firewall, 24, null, 900)], 560, 346, 24, C.bad);
+            } else if (s.step === 'open') {
+                cv.text('The car\'s Wi-Fi is off', 80, 150, 44, C.text, { font: 'bold' });
+                lines(['Switch on the car\'s hotspot, or connect the phone for wireless CarPlay.', 'The code to scan shows here then.'], 80, 220, 30, C.dim);
+            } else if (s.step === 'missing') {
+                cv.text('This needs the NES game loader', 80, 130, 44, C.text, { font: 'bold' });
+                lines(['Install "NES game loader" in the MGU Store, from the source this app came from,', 'and restart the head unit once.',
+                    '', 'Without it: put your .nes files in a folder "nes" on a USB stick.'], 80, 200, 30, C.dim);
+            } else if (s.step === 'refused') {
+                cv.text('Restart the head unit once', 80, 150, 44, C.text, { font: 'bold' });
+                lines(['The NES game loader was installed before this app and does not know it yet.', 'Settings in the MGU Store: Restart head unit.'], 80, 220, 30, C.dim);
+            } else if (s.step === 'failed') {
+                cv.text('The page did not open', 80, 150, 44, C.text, { font: 'bold' });
+                lines([fit(cv, String(s.error || ''), 30, null, 1400)], 80, 220, 30, C.bad);
+            } else {
+                cv.text('Opening the page...', 80, 150, 44, C.text, { font: 'bold' });
+            }
+            return ui.image('ADD_GFX', cv);
+        }
+        ctx.loop('ADD', 2, addScreen);
         log.info('nes app started');
     },
 });
