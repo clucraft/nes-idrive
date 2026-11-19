@@ -15,7 +15,7 @@
  * A tap holds its button for TAP frames and lets go for GAP frames, so turning the knob several
  * clicks gives that many presses (rapid fire). mask() is asked once for every frame the game runs.
  * A push or press that is over before the game's next frame still reaches it, for SEEN frames.
- * setExternal() takes the buttons of another pad (a USB gamepad's helper, one day).
+ * setExternal() takes the buttons of another pad: a USB gamepad's (pad.js). They are let go when the game stops.
  */
 const { BTN } = require('./nes-core');
 
@@ -137,7 +137,7 @@ class Controls {
     /** game running or not (stopped: everything is let go, waiting taps are dropped) */
     enable(on) {
         this.enabled = !!on;
-        if (!on) { this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; }); this.dirFrames = this.pressFrames = 0; }
+        if (!on) { this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; }); this.dirFrames = this.pressFrames = 0; this.ext = 0; }
     }
 }
 

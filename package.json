@@ -12,6 +12,7 @@
     "build:car": "node tools/build-car.js",
     "build:store": "node tools/build-store.js",
     "build:games": "sh games/build.sh",
+    "build:usbpipe": "node tools/build-usbpipe.js",
     "build:core": "bash core/build.sh"
   }
 }

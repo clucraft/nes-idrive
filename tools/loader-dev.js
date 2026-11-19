@@ -9,6 +9,8 @@
  * whether Node.js may be reached: the phone needs that.
  *
  * start() -> { socket: what the app connects to (NES_LOADER_SOCK), stop() }
+ * start({ service: { ... } }) hands more to the loader's createService (a stand-in for a USB gamepad: its
+ * padFind and padPipe, as test/run.js uses them; Windows and macOS have no usbfs to read a real one through).
  */
 const fs = require('fs');
 const os = require('os');
@@ -29,7 +31,7 @@ function start(opts) {
     if (!fs.existsSync(link)) fs.symlinkSync(data, link, 'junction');
     if (process.platform !== 'win32') { try { fs.unlinkSync(socket); } catch (e) { /* none */ } }
     const { createService } = require(path.join(ROOT, 'loader', 'service'));
-    const service = createService({ listen: socket, oapDir: oap, interfaces: ['*'], nft: null, asSelf: true, exit: false, idleMs: 1e12, log });
+    const service = createService(Object.assign({ listen: socket, oapDir: oap, interfaces: ['*'], nft: null, asSelf: true, exit: false, idleMs: 1e12, log }, (opts && opts.service) || {}));
     const stop = () => {
         try { service.stop(0); } catch (e) { /* stopped */ }
         // the link first, as a link: never what it points to

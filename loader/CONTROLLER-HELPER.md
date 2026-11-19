@@ -1,0 +1,93 @@
+# USB gamepad: design notes and what is left to prove
+
+What the feature is and how it limits itself is in [`README.md`](README.md), "A USB gamepad". This file
+keeps the reasons behind the design, what a look at a real head unit showed, and the steps that are still
+open. **Status (2026-11-19): built, tested against a stand-in for the pad, and tried on a real Xbox One S
+pad on a PC, where every button and the left stick were read correctly (below). Nothing has run on a car.**
+
+## What a head unit showed
+
+Read-only, over SSH, on one rooted iDrive 7 unit (kernel `4.14.198-apl`), with an Xbox One S pad
+(`045e:02ea`) on a cable in the car's USB port:
+
+- The pad is listed on the USB bus (`New USB device found ... Product: Controller`, 500 mA), so the port
+  is a working host.
+- **No driver binds it.** The kernel has no HID core, no `usbhid`, no `hidraw`, no `evdev`, no `joydev`,
+  no `uinput`, no `xpad`: `/sys/bus/usb/drivers` holds `hub`, `usb` and `usbfs`, and there is no
+  `/dev/input` at all. Any pad, of any make, ends up the same way there.
+- **usbfs is there:** `/dev/bus/usb/<bus>/<device>`, mode `crw-rw----`, owner `root`, group `mgu_usb`.
+- The pad's interface 0 is class `ff`, subclass `47`, protocol `d0` (Microsoft's "GIP"), with two
+  interrupt endpoints of 64 bytes: `0x82` in, `0x02` out. That is what `pad.js` looks for.
+
+## Decisions
+
+- **In the loader, not in the app.** The app's user cannot open `/dev/bus/usb/*`. The loader already
+  runs as root, started by the app's connection and gone two minutes after it, on a socket only the NES
+  app can reach.
+- **The program that touches USB knows nothing.** Node 8 cannot make the ioctl calls usbfs needs, so a
+  compiled program is unavoidable. `usbpipe` only passes one interface's packets on as lines of hex, in
+  both directions. Everything about gamepads is in `pad.js`, where it is tested without a pad and can
+  change without the program being built again. Another kind of pad is a second reader in `pad.js`,
+  not another program.
+- **Asynchronous requests** (`USBDEVFS_SUBMITURB` / `REAPURB`), not the simpler blocking
+  `USBDEVFS_BULK`. A blocking read with a timeout can lose the packet that arrives as the timeout
+  ends, which here would be a button that stays pressed; without a timeout it waits where no signal
+  reaches it, so the program could not be stopped until the next button press.
+- **Go, not C.** One file, no library beside Go's own, and the same program from any computer
+  (`npm run build:usbpipe`); it depends on nothing of the head unit but the kernel. It is about 1.6 MB,
+  where C would be some tens of KB: the price of needing no Linux C toolchain to build it.
+- **A program in a Store tool is allowed.** The MGU Store's `docs/PUBLISHING.md`: "Native programs
+  ship as tools", prebuilt and committed, run from `/var/opt/<id>/current/`.
+- **Not root.** `usbpipe` is started as the NES app's user with the group of the pad's device file.
+  If the head unit refuses that user the device, the first car test shows it as
+  `gamepad: its helper ended (2): usbpipe: ... permission denied` in the journal; what to do then is
+  open (see below).
+- **Off unless asked for.** With the setting on, the loader runs for as long as a game does, and looks
+  at the USB bus every two seconds. Until now nothing of the loader ran unless "Add games from a
+  phone" was open; that stays true for everyone who leaves the setting off.
+- **The Xbox pad's packets are the kernel's.** The four packets that switch an Xbox One S pad on, the
+  layout of its input report and the answer its Xbox button wants are taken from
+  `drivers/input/joystick/xpad.c` (`xboxone_init_packets`, `xpadone_process_packet`,
+  `xpadone_ack_mode_report`), not from memory. The tests hold them to that.
+
+## Open, in the order to settle them
+
+1. **A real pad on a PC: done, for an Xbox One S pad.** WSL 2's kernel has no driver for the pad, so a
+   pad handed to WSL with [usbipd-win](https://github.com/dorssel/usbipd-win) is in the state the head
+   unit leaves it in: listed, three `ff`/`47`/`d0` interfaces, no driver. `node tools/pad-try.js --raw`
+   finds it there as `pad.js` finds it on the head unit, runs `usbpipe` on it and prints every packet
+   (the top of that file has the usbipd commands; this pad needed `bind --force`).
+
+   What that showed on 2026-11-19 (usbipd-win 5.3.0, WSL kernel 6.18):
+   - `usbpipe` opened the device, claimed interface 0 and sent the four packets that switch the pad on;
+     50 ms later the pad sent its input report, 18 bytes, nothing held;
+   - **every button, pressed one at a time by a person, was read as itself:** A, B, X, Y, the D-pad's
+     four, Menu, View, LB, RB, and A with D-pad right together. Each press and each release was one
+     change, 28 for 14 presses, none missed and none stuck;
+   - **the left stick,** held up, down, left and right, was read as those, up being the greater number
+     as the kernel driver has it; the right stick and trigger moved where that driver puts them;
+   - **the Xbox button** sent its own packet on the press and on the release, each was answered, and
+     the pad did not repeat them;
+   - every 20 seconds the pad sent a packet starting `03`, which is no report and is passed over;
+   - `usbpipe` ended with 0 when its input ended, each time, and ran for 15 minutes without an error.
+
+   Then the whole way in one piece: `npm run emu -- --pad` put the same pad behind the loader beside
+   the emulator, and *Pad Test* counted its D-pad's four directions, View, Menu and A as a person
+   pressed them. From the pad to the game, only the head unit itself is left out.
+
+   Some of those packets are in `test/run.js` now. One thing to know: let go from full left, the stick
+   sprang past the middle far enough (58 %) to be read as *right* for 10 ms. The D-pad has no such
+   thing. If it shows in a game, a direction from the stick should have to last a few packets to count.
+2. **On the car.** Install the app and the loader from the Store, switch *USB gamepad* on, plug the
+   pad in, start *Pad Test*. `journalctl -u clucraft-nes-loader` has a `gamepad:` line for each step.
+   What can go wrong there and nowhere else: the Store not installing a 0755 program, the app's user
+   being refused the device (then: run `usbpipe` as root after all, or as a user of its own), and the
+   head unit's recovery manager minding the extra process.
+3. **Buttons a player would change:** which of A, B, X, Y is the NES pad's A and B is fixed in
+   `app/pad.js` (`toNes`). A setting, as the controller's press and turns have, is a small change.
+4. **Other pads.** All need a reader in `pad.js`; none needs a kernel driver.
+   - Xbox 360 on a cable: no packets to switch it on, a fixed report of 20 bytes. Small.
+   - A plain USB (HID) pad, a PlayStation pad on a cable: the report's layout comes from the pad's
+     own description of it, which `usbpipe` cannot ask for yet (it passes on no control requests).
+     Larger.
+   - A wireless pad's dongle: another protocol again.

@@ -4,7 +4,8 @@
 // the controller -> pad mapping (controls.js), the games / saves on disk (library.js) and the two
 // games that come with the app (app/games/), played in the emulator. "Add games from a phone": the QR
 // code (qr.js) and the NES game loader (loader/) from the app's request to a game sent over HTTP, with a
-// stand-in for the head unit's firewall program.
+// stand-in for the head unit's firewall program. A USB gamepad: what its packets mean (loader/pad.js), and
+// its buttons from a stand-in for the program that reads it (test/fake-usbpipe.js) through the loader to the app.
 // Then the MGU Store's view of this repository: mgu-repo.json and the committed package in store/.
 // No SDK, head unit or game needed; runs on Node 8 (the head unit's) as on a current one:
 //   node test/run.js        (npm test; npm run test:node8 for Node 8)
@@ -21,9 +22,11 @@ const { Library, titleOf, openPack, usbFolders } = require(path.join(ROOT, 'app/
 const { unpack } = require(path.join(ROOT, 'tools/tar'));
 const { spawnSync } = require('child_process');
 const http = require('http');
+const net = require('net');
 const { qr } = require(path.join(ROOT, 'app/qr'));
 const { Phone } = require(path.join(ROOT, 'app/phone'));
-const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')) };
+const { Pad, PAD, toNes } = require(path.join(ROOT, 'app/pad'));
+const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')) };
 
 let failed = 0;
 const check = async (name, fn) => {
@@ -211,6 +214,105 @@ function writePack(file, files) {
         assert.strictEqual(c.mask(), 0);
         c.setExternal(BTN.LEFT | BTN.RIGHT | BTN.A);           // (another pad: opposite directions cancel)
         assert.strictEqual(c.mask(), BTN.A);
+        c.setExternal(BTN.B);
+        c.enable(false); c.enable(true);                       // its buttons are let go with the game: no button stuck at the next start
+        assert.strictEqual(c.mask(), 0);
+    });
+
+    /* ---------- a USB gamepad: what its packets mean (loader/pad.js), and its buttons as the NES pad's (app/pad.js) ---------- */
+    /** an Xbox pad's input report: its two button bytes and its left stick */
+    const report = (b4, b5, x, y) => { const d = Buffer.alloc(18); d[0] = 0x20; d[3] = 0x0e; d[4] = b4; d[5] = b5; d.writeInt16LE(x || 0, 10); d.writeInt16LE(y || 0, 12); return d; };
+    const XBOX_ONE_S = { vid: 0x045e, pid: 0x02ea };
+    await check('gamepad: an Xbox One S pad is switched on by the kernel driver\'s four packets, counted; another make\'s pad by three', () => {
+        const hexes = (list) => list.map((b) => b.toString('hex'));
+        const g = new loader.pad.Gip(XBOX_ONE_S);
+        assert.deepStrictEqual(hexes(g.start()), ['0520000100', '0520010f06', '0a200203000114', '062003020100']);
+        assert.deepStrictEqual(hexes(g.start()), ['0520040100', '0520050f06', '0a200603000114', '062007020100'], 'asked again: the count goes on');
+        assert.deepStrictEqual(hexes(new loader.pad.Gip({ vid: 0x0e6f, pid: 0x02a4 }).start()), ['0520000100', '0a200103000114', '062002020100']);
+    });
+    await check('gamepad: an Xbox pad\'s report is its buttons; the left stick is the D-pad too; anything else is no report', () => {
+        const g = new loader.pad.Gip(XBOX_ONE_S), P = loader.pad.PAD, far = loader.pad.STICK + 1;
+        const b = (d) => g.packet(d).buttons;
+        assert.strictEqual(b(report(0, 0)), 0);
+        [[0x04, 0, P.START], [0x08, 0, P.SELECT], [0x10, 0, P.A], [0x20, 0, P.B], [0x40, 0, P.X], [0x80, 0, P.Y], [0, 0x01, P.UP], [0, 0x02, P.DOWN],
+            [0, 0x04, P.LEFT], [0, 0x08, P.RIGHT], [0, 0x10, P.L], [0, 0x20, P.R], [0x01, 0xc0, 0]].forEach((t) => assert.strictEqual(b(report(t[0], t[1])), t[2], 'bytes ' + t[0] + ' ' + t[1]));
+        assert.strictEqual(b(report(0x50, 0x09)), P.A | P.X | P.UP | P.RIGHT);
+        assert.strictEqual(b(report(0, 0, far, 0)), P.RIGHT);
+        assert.strictEqual(b(report(0, 0, -far, far)), P.LEFT | P.UP, 'up is the greater number');
+        assert.strictEqual(b(report(0, 0, 0, -far)), P.DOWN);
+        assert.strictEqual(b(report(0, 0, far - 2, 2 - far)), 0, 'a stick at rest, or not far out');
+        assert.strictEqual(b(report(0x10, 0).slice(0, 8)), P.A, 'a report without the sticks');
+        [Buffer.alloc(0), Buffer.from([0x20, 0, 1]), Buffer.from([0x20, 0, 1, 2, 0x10]), Buffer.from([0x03, 0x20, 1, 4, 0x80, 0, 0, 0]), null].forEach((d) => assert.deepStrictEqual(g.packet(d), {}));
+        // what an Xbox One S pad sent, read through usbpipe, once it was switched on: its report with nothing held and
+        // the sticks where they rest (a little off the middle), and every 20 seconds a packet that is no report
+        assert.strictEqual(b(Buffer.from('20000c0e0000000000004906a7027c020cf8', 'hex')), 0);
+        assert.deepStrictEqual(g.packet(Buffer.from('0320430480010000', 'hex')), {});
+    });
+    await check('gamepad: the packets a real Xbox One S pad sent for its buttons and its left stick are read as those', () => {
+        // (captured through loader/usbpipe with tools/pad-try.js --raw, a button or a direction held at a time)
+        const g = new loader.pad.Gip(XBOX_ONE_S), P = loader.pad.PAD;
+        const sent = {
+            '2000230e8000000000004906a7027c020cf8': P.Y, '2000410e0400000000004906a7027c020cf8': P.START, '2000470e0800000000004906a7027c020cf8': P.SELECT,
+            '20002f0e0002000000004906a7027c020cf8': P.DOWN, '20004f0e00100000000049062c027c020cf8': P.L, '20005e0e10080000000049062c027c020cf8': P.A | P.RIGHT,
+            '2000ee0e0000000000004800004f6e051cfa': P.UP, '2000550e0000000000005f05dda86e051cfa': P.DOWN,           // the stick: up, down,
+            '20009f0e0000000000009c8f79fd6e051cfa': P.LEFT, '2000d50e000000000000f84954036e051cfa': P.RIGHT,        // left, right
+        };
+        Object.keys(sent).forEach((hex) => assert.strictEqual(g.packet(Buffer.from(hex, 'hex')).buttons, sent[hex], hex));
+        // its Xbox button, pressed and let go: each wants its own answer, and got it
+        assert.strictEqual(g.packet(Buffer.from('07300102015b', 'hex')).send[0].toString('hex'), '01200109000720020000000000');
+        assert.strictEqual(g.packet(Buffer.from('07300202005b', 'hex')).send[0].toString('hex'), '01200209000720020000000000');
+    });
+    await check('gamepad: the Xbox button\'s report is acknowledged; a pad that says hello later is switched on again, its buttons let go', () => {
+        let t = 0;
+        const g = new loader.pad.Gip(XBOX_ONE_S, () => t);
+        g.start();
+        assert.deepStrictEqual(g.packet(Buffer.from('07302a02015b', 'hex')).send.map((b) => b.toString('hex')), ['01202a09000720020000000000']);
+        assert.deepStrictEqual(g.packet(Buffer.from('07202a02005b', 'hex')), {}, 'one that asks for no acknowledgement');
+        const hello = Buffer.from('02200a1c7eed8be0', 'hex');
+        assert.deepStrictEqual(g.packet(hello), {}, 'hello at the start: it is being switched on');
+        t += 5000;
+        const r = g.packet(hello);
+        assert(r.buttons === 0 && r.send.length === 4 && r.send[0].toString('hex') === '0520040100', JSON.stringify(r));
+        assert.deepStrictEqual(g.packet(hello), {}, 'and not again at once');
+    });
+    await check('gamepad: found on the USB bus as the head unit lists an Xbox One S pad; one a kernel driver has, or another device, is not', () => {
+        // (as read on a head unit with the pad plugged in: probe-controller.txt)
+        const iface = (cls, sub, proto, n) => ({ bInterfaceClass: cls, bInterfaceSubClass: sub, bInterfaceProtocol: proto, bInterfaceNumber: n });
+        const tree = {
+            usb1: { busnum: '1', devnum: '1', idVendor: '1d6b', idProduct: '0002', product: 'xHCI Host Controller' },
+            '1-0:1.0': Object.assign(iface('09', '00', '00', '00'), { driver: '' }),
+            '1-3': { busnum: '1', devnum: '2', idVendor: '0424', idProduct: '4502' },
+            '1-3:1.0': Object.assign(iface('09', '00', '01', '00'), { driver: '' }),
+            '1-3.1': { busnum: '1', devnum: '4', idVendor: '045e', idProduct: '02ea', product: 'Controller', manufacturer: 'Microsoft' },
+            '1-3.1:1.0': Object.assign(iface('ff', '47', 'd0', '00'), { 'ep_02/bEndpointAddress': '02', 'ep_02/bmAttributes': '03', 'ep_02/wMaxPacketSize': '0040', 'ep_82/bEndpointAddress': '82', 'ep_82/bmAttributes': '03', 'ep_82/wMaxPacketSize': '0040' }),
+            '1-3.1:1.1': iface('ff', '47', 'd0', '01'),
+            '1-3.1:1.2': iface('ff', '47', 'd0', '02'),
+            '1-3.3': { busnum: '1', devnum: '3', idVendor: '0424', idProduct: '2530', product: 'Bridge device' },
+            '1-3.3:1.0': iface('ff', '00', '00', '00'),
+        };
+        const SYS = '/sys/bus/usb/devices';
+        const entry = (file) => { const rel = file.slice(SYS.length + 1), i = rel.indexOf('/'); return [tree[i < 0 ? rel : rel.slice(0, i)], i < 0 ? null : rel.slice(i + 1)]; };
+        const io = {
+            list: (dir) => { if (dir === SYS) return Object.keys(tree); const e = entry(dir)[0]; return e ? Object.keys(e).map((k) => k.split('/')[0]).filter((k, i, all) => all.indexOf(k) === i) : []; },
+            read: (file) => { const e = entry(file); return e[0] && e[0][e[1]] !== undefined ? e[0][e[1]] : null; },
+            has: (file) => { const e = entry(file); return !!e[0] && e[0][e[1]] !== undefined; },
+        };
+        assert.deepStrictEqual(loader.pad.find({ io }), [{ kind: 'gip', node: '/dev/bus/usb/001/004', iface: 0, epIn: 0x82, epOut: 0x02, packet: 64, vid: 0x045e, pid: 0x02ea, name: 'Controller' }]);
+        tree['1-3.1:1.0'].driver = '';                         // (a PC: its kernel's own driver has the pad)
+        assert.deepStrictEqual(loader.pad.find({ io }), []);
+        delete tree['1-3.1:1.0'].driver;
+        delete tree['1-3.1:1.0']['ep_02/bEndpointAddress'];
+        assert.deepStrictEqual(loader.pad.find({ io }), [], 'a pad that takes no packets cannot be switched on');
+        assert.deepStrictEqual(loader.pad.find({ sys: path.join(os.tmpdir(), 'nes-test-no-such-folder') }), [], 'no USB bus to look at (a PC that is not Linux)');
+    });
+    await check('gamepad: the app knows the loader\'s buttons, and makes the NES pad of an Xbox pad\'s', () => {
+        assert.deepStrictEqual(PAD, loader.pad.PAD);
+        assert.strictEqual(toNes(PAD.UP | PAD.A), BTN.UP | BTN.A);
+        assert.strictEqual(toNes(PAD.B), BTN.A);
+        assert.strictEqual(toNes(PAD.X), BTN.B);
+        assert.strictEqual(toNes(PAD.Y | PAD.LEFT | PAD.DOWN), BTN.B | BTN.LEFT | BTN.DOWN);
+        assert.strictEqual(toNes(PAD.START | PAD.SELECT | PAD.RIGHT), BTN.START | BTN.SELECT | BTN.RIGHT);
+        assert.strictEqual(toNes(PAD.L | PAD.R), 0);
     });
 
     /* ---------- games and saves ---------- */
@@ -392,6 +494,8 @@ function writePack(file, files) {
         assert.deepStrictEqual(loader.nft.rulesFor('output', ['uap0'], 8493).map((r) => r.join(' ')), ['oifname "uap0" tcp sport 8493 accept comment "clucraft-nes-loader"']);
         assert.deepStrictEqual(loader.nft.rulesFor('forward', ['uap0'], 8493), []);
     });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (what, fn) => { for (let i = 0; i < 100; i++) { if (fn()) return; await sleep(50); } throw new Error('never: ' + what); };
     if (process.platform === 'win32') console.log('skip loader: the service with a firewall and the app (a head unit runs Linux: these need its kind of sockets and a shell)');
     else {
         // the head unit in small: an app's folder as MainApp lays it out, and a firewall that drops what no rule accepts
@@ -425,8 +529,6 @@ function writePack(file, files) {
             assert.strictEqual(loader.nft.shut({ program: nftProgram }), 0);
             assert.strictEqual(loader.nft.open(['wlan_bridge'], 8493, { program: path.join(tmp, 'no-such-nft') }).errors.length, 1, 'no nft: an error to show, nothing thrown');
         });
-        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-        const until = async (what, fn) => { for (let i = 0; i < 100; i++) { if (fn()) return; await sleep(50); } throw new Error('never: ' + what); };
         const request = (method, address, body) => new Promise((resolve, reject) => {
             const u = require('url').parse(address);
             const r = http.request({ method, hostname: u.hostname, port: u.port, path: u.path }, (m) => { const parts = []; m.on('data', (d) => parts.push(d)); m.on('end', () => resolve({ status: m.statusCode, type: m.headers['content-type'], body: Buffer.concat(parts).toString() })); });
@@ -514,6 +616,84 @@ function writePack(file, files) {
         }
     }
 
+    /* ---------- a USB gamepad, from the program that reads it to the app (a stand-in for that program: test/fake-usbpipe.js) ---------- */
+    {
+        // (Windows has pipes of this kind of name where other systems have socket files)
+        const sock = (name) => (process.platform === 'win32' ? '\\\\.\\pipe\\nes-test-' + process.pid + '-' + name : path.join(tmp, name + '.sock'));
+        const padLog = path.join(tmp, 'pad.log'), wrote = () => (fs.existsSync(padLog) ? fs.readFileSync(padLog, 'utf8').split('\n').filter(Boolean) : []);
+        // the pad, once switched on: A; let go and left on the D-pad; the stick right with X; Menu; nothing; the
+        // Xbox button, which wants an answer; and then it waits to be pulled out
+        const does = [report(0x10, 0), report(0, 0x04), report(0x40, 0, 30000, 0), report(0x04, 0), report(0, 0)].map((b) => b.toString('hex')).concat(['07302a02015b', 'pulled']).join(',');
+        const dev = { kind: 'gip', node: '/dev/bus/usb/001/004', iface: 0, epIn: 0x82, epOut: 0x02, packet: 64, vid: 0x045e, pid: 0x02ea, name: 'Controller' };
+        const padSaid = [], seen = [];
+        let plugged = false;
+        const padService = loader.service.createService({ listen: sock('pad'), nft: null, asSelf: true, exit: false, idleMs: 1e9, padScanMs: 40, padFind: () => (plugged ? [dev] : []),
+            padPipe: [process.execPath, path.join(ROOT, 'test', 'fake-usbpipe.js'), padLog, does], padEnv: process.env, log: (s) => padSaid.push(s) });
+        const pad = new Pad({ socket: sock('pad'), log, onMask: (m) => seen.push(m) });
+        try {
+            await check('gamepad: the app asks while a game runs; a pad plugged in then is switched on, and its buttons are the NES pad\'s in the app', async () => {
+                pad.start();
+                await until('the loader\'s answer', () => padService.status().pad.on === true);
+                await sleep(150);
+                assert(pad.name === null && !seen.length && !wrote().length, 'no pad is plugged in yet');
+                plugged = true;
+                await until('its buttons', () => seen.length >= 5);
+                assert.deepStrictEqual(seen, [BTN.A, BTN.LEFT, BTN.RIGHT | BTN.B, BTN.START, 0]);
+                assert.strictEqual(pad.name, 'Controller');
+                const log0 = wrote();
+                assert.strictEqual(log0[0], 'args /dev/bus/usb/001/004 0 82 2 64', 'what the program is started with');
+                assert.deepStrictEqual(log0.slice(1, 5), ['out 0520000100', 'out 0520010f06', 'out 0a200203000114', 'out 062003020100'], 'what switches the pad on');
+                await until('the answer to the Xbox button', () => wrote().indexOf('out 01202a09000720020000000000') >= 0);
+                assert.strictEqual(padService.status().page.open, false, 'a gamepad opens no page and no port');
+            });
+            await check('gamepad: pulled out, it is gone for the app; plugged in again, it is read again; the game stopping lets go of it', async () => {
+                plugged = false;
+                fs.writeFileSync(padLog + '.pull', '');
+                await until('the pad gone', () => wrote().indexOf('gone') >= 0 && pad.name === null && padService.status().pad.name === null);
+                assert(padSaid.some((l) => /gamepad: unplugged/.test(l)), padSaid.join(' | '));
+                assert.strictEqual(seen.length, 5, 'buttons from a pad that is gone');
+                fs.unlinkSync(padLog + '.pull');
+                plugged = true;
+                await until('the pad again', () => wrote().filter((l) => /^args /.test(l)).length === 2 && seen.length >= 6);
+                assert.strictEqual(seen[5], BTN.A);
+                pad.stop();
+                assert.strictEqual(seen[seen.length - 1], 0, 'a button held when the game stops is let go');
+                await until('the loader letting go', () => padService.status().pad.on === false && wrote().indexOf('end') >= 0);
+                const n = seen.length;
+                await sleep(200);
+                assert.strictEqual(seen.length, n, 'buttons after the game stopped');
+            });
+            await check('gamepad: a program that cannot read the pad is not started over and over; a loader from before gamepads is asked once', async () => {
+                const said = [];
+                const broken = loader.service.createService({ listen: sock('pad-broken'), nft: null, asSelf: true, exit: false, idleMs: 1e9, padScanMs: 20, padFind: () => [dev],
+                    padPipe: [process.execPath, '-e', 'console.error("usbpipe: interface 0 of /dev/bus/usb/001/004: permission denied"); process.exit(2)'], padEnv: process.env, log: (s) => said.push(s) });
+                const p = new Pad({ socket: sock('pad-broken'), log, onMask: (m) => seen.push(m) });
+                try {
+                    p.start();
+                    await until('giving up', () => p.given === true);
+                    assert(/cannot be read.*permission denied/.test(p.said), p.said);
+                    const tries = said.filter((l) => /Controller \(045e:02ea\)/.test(l)).length;
+                    await sleep(200);
+                    assert.strictEqual(said.filter((l) => /Controller \(045e:02ea\)/.test(l)).length, tries, 'started again after giving up');
+                    assert(tries >= 2 && tries <= 5, tries + ' tries');
+                } finally { p.stop(); broken.stop(0); }
+                let asked = 0;
+                const old = net.createServer((c) => { asked++; c.on('error', () => {}); c.on('data', () => c.write('{"ok":false,"error":"unknown: pad"}\n')); });
+                await new Promise((r) => old.listen(sock('pad-old'), r));
+                const q = new Pad({ socket: sock('pad-old'), log });
+                try {
+                    q.start();
+                    await until('its answer', () => q.given === true);
+                    await sleep(150);
+                    assert.strictEqual(asked, 1);
+                } finally { q.stop(); old.close(); }
+            });
+        } finally {
+            pad.stop();
+            padService.stop(0);
+        }
+    }
+
     /* ---------- the MGU Store: mgu-repo.json and store/ (the Store's docs/PUBLISHING.md, "Repo tree") ---------- */
     const json = (rel) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
     const SEMVER = /^\d+\.\d+\.\d+$/, relPath = (p) => typeof p === 'string' && !!p && !path.isAbsolute(p) && p.split('/').indexOf('..') < 0;
@@ -564,7 +744,7 @@ function writePack(file, files) {
     });
     await check('store: the package holds this app/ (else: npm run build:store)', () => {
         const inPkg = (n) => { const m = members.find((x) => x.name === 'package/javascript/' + n); assert(m, n + ' is not in the package'); return m.data; };
-        [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['phone.js'], ['qr.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
+        [['app.js', 'main.js'], ['controls.js'], ['library.js'], ['nes-core.js'], ['phone.js'], ['pad.js'], ['qr.js'], ['nes.wasm'], ['LICENSE'], ['NOTICE']].forEach((q) => {
             assert(inPkg(q[0]).equals(fs.readFileSync(path.join(ROOT, 'app', q[1] || q[0]))), 'app/' + (q[1] || q[0]) + ' changed since the package was built');
         });
         // the games in it: the app's own two, as they are in app/games/
@@ -604,6 +784,13 @@ function writePack(file, files) {
         assert(sock.indexOf('ListenStream=' + require(path.join(ROOT, 'app/phone')).SOCKET) >= 0 && /^SocketMode=0600$/m.test(sock), 'the socket is the one the app asks at, root\'s alone until sockgroup.js opens it to the app');
         assert.strictEqual(spec.config.loaderSocket, require(path.join(ROOT, 'app/phone')).SOCKET);
         assert.strictEqual(require(path.join(ROOT, 'loader/games')).APP, spec.id, 'the loader looks for another app');
+        // the program that reads a gamepad: for the head unit's processor, needing no library of the head unit's
+        // (tools/build-usbpipe.js builds it from loader/src/usbpipe/main.go)
+        const pipe = fs.readFileSync(path.join(ROOT, tool.path, 'usbpipe'));
+        assert(c.files.some((f) => f.path === 'usbpipe' && f.mode === '0755'), 'usbpipe is installed as a program');
+        assert(pipe.slice(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && pipe[4] === 2 && pipe[5] === 1 && pipe.readUInt16LE(16) === 2 && pipe.readUInt16LE(18) === 0x3e, 'usbpipe is a 64-bit x86 Linux program');
+        const heads = pipe.readUInt32LE(32), headSize = pipe.readUInt16LE(54), headCount = pipe.readUInt16LE(56);   // (the program headers; none names a loader for libraries: type 3)
+        for (let i = 0; i < headCount; i++) assert.notStrictEqual(pipe.readUInt32LE(heads + i * headSize), 3, 'usbpipe needs libraries: build it with tools/build-usbpipe.js');
     });
     await check('store: the on-unit build passes with only the files an install downloads, and says what is wrong without the package', () => {
         const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'nes-store-'));

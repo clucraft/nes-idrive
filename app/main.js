@@ -20,7 +20,8 @@
  * "nes" on a USB stick, or packed into the app from app/roms/ by a build on a PC.
  *
  * Controls (controls.js): push the controller for the D-pad, press it for A, turn it right for B and
- * left for Start; Select, Start, B and A are also buttons on the touchscreen, beside the picture.
+ * left for Start; Select, Start, B and A are also buttons on the touchscreen, beside the picture. With
+ * the setting "USB gamepad", an Xbox pad on a cable plays too (pad.js; the NES game loader reads it).
  *
  * The game runs only while GAME is on screen - and, with "Parked only" (the default), while the car
  * stands. Whenever it stops (BACK, MENU, a popup or call, driving off, the app closing) the console's
@@ -35,6 +36,7 @@ const { Nes } = require('./nes-core');
 const { Controls } = require('./controls');
 const { Library, mkdirp, usbFolders } = require('./library');
 const { Phone } = require('./phone');
+const { Pad } = require('./pad');
 const { qr } = require('./qr');
 
 const W = 1600, H = 520, IMG = 1;
@@ -198,6 +200,8 @@ mgu.run({
             statusRotaryEncoderState: (v) => { if (Date.now() - ccuT > 1000) ctl.raw(v, false); },
         }, log).then((s) => log.info('controller ' + (s.error ? 'error: ' + s.error : 'subscribed')));
         BAR.forEach((b) => ui.onClick(b, () => { if (settings.get('touch') !== false) ctl.bar(b); }));
+        // a USB gamepad (setting "USB gamepad"): the NES game loader reads it while a game runs (pad.js)
+        const pad = new Pad({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onMask: (m) => ctl.setExternal(m) });
 
         /* ---------- run while the game screen is up; save when it stops ---------- */
         const shown = () => ui.isVisible('GAME') && (!ui.hasFocus || ui.hasFocus('GAME'));
@@ -215,6 +219,7 @@ mgu.run({
                 if (go) { lastT = 0; acc = 0; keptT = Date.now(); } else { keep(true); menu(); }
             }
             if (going) { applyOptions(); if (Date.now() - keptT > KEEP_MS) keep(true); }
+            if (going && settings.get('pad') === true) pad.start(); else pad.stop();
         }
         setInterval(sync, 200);
         if (ui.onFocus) ui.onFocus(() => sync());

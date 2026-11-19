@@ -4,7 +4,9 @@ A small service for the head unit that lets the [NES app](../README.md) take gam
 
 It exists because an app cannot do this on its own: the head unit's firewall drops every connection to an app. The loader is the part that may open a port. It is optional; without it the app works as before, and games come from a USB stick or over SSH.
 
-> **Not tried on a car yet.** Everything here ran on a PC: the page, the checks on what it takes, the firewall rules against a stand-in for `nft`, the app's screen in the emulator. The MGU Store installing it, the real firewall and the car Wi-Fi are what the first try on a car shows.
+It also reads a **USB gamepad** for the app, which an app cannot do either: [A USB gamepad](#a-usb-gamepad), below.
+
+> **Not tried on a car yet.** Everything here ran on a PC: the page, the checks on what it takes, the firewall rules against a stand-in for `nft`, the app's screen in the emulator. The MGU Store installing it, the real firewall and the car Wi-Fi are what the first try on a car shows. The gamepad has been read from a real Xbox One S pad on a PC, and has played a game in the emulator; on a car it has not.
 
 ## Using it
 
@@ -19,8 +21,9 @@ The page can also take a game out again. It works while the screen with the code
 
 | | runs as | does |
 |---|---|---|
-| `service.js` | root | answers the NES app on `/run/clucraft-nes-loader.sock`; puts the page's port into the firewall and takes it out; starts the page |
+| `service.js` | root | answers the NES app on `/run/clucraft-nes-loader.sock`; puts the page's port into the firewall and takes it out; starts the page; starts `usbpipe` and tells the app the gamepad's buttons |
 | `page.js` | the NES app's own user | listens on the car Wi-Fi; checks and writes the games |
+| `usbpipe` | the NES app's own user, in the group of the head unit's USB devices | passes a gamepad's USB packets on, while a game runs |
 
 - **Started by the app, never at boot.** systemd starts the service when the NES app connects to the socket. Two minutes after the app is gone it ends. Nothing of it runs while the app's screen was never opened.
 - **Only the NES app can ask.** The socket belongs to the NES app's own group (`sockgroup.js`), not to the group every app is in.
@@ -29,6 +32,23 @@ The page can also take a game out again. It works while the screen with the code
 - **The page is not root.** It runs as the user the NES app runs as, so it can write where the app can and nowhere else.
 - **What it takes:** files that start as an iNES file does, 8 MB at most, 64 MB and 1000 games in all, under a name with folders and odd characters taken out, ending in `.nes`. They go to the app's `data/roms/` folder, which the service finds itself; a request cannot name a folder.
 - **It cannot restart the head unit by crashing.** No core file reaches the head unit's crash handler (`LimitCORE=1`), the Store lists the units with the head unit's recovery manager, and a service that keeps failing to start is left stopped.
+
+## A USB gamepad
+
+The head unit's kernel has no driver for a gamepad: no HID, no input events, no joystick driver. A pad plugged into the car's USB port is listed on the bus and nothing more, and an app may not open USB devices. So, with the app's setting **USB gamepad** on (it is off at first):
+
+1. While a game runs, the app asks the loader for a pad (`{"cmd":"pad"}` on the same socket).
+2. The loader looks for one on the USB bus every two seconds: an interface of class `ff`, subclass `47`, protocol `d0`, which is an Xbox One or Xbox Series pad on a cable, or another make's pad for that console.
+3. It starts `usbpipe` on it. That program knows nothing about gamepads: it passes the packets of one USB interface on as lines of text, in both directions, through the kernel's usbfs.
+4. `pad.js` sends the packets that switch the pad on, reads its reports, and the loader tells the app the buttons whenever they change. The packets and the report's layout are those of the Linux kernel's own driver (`drivers/input/joystick/xpad.c`).
+5. When the game stops, the app leaves, or the pad is pulled out, `usbpipe` ends. Nothing reads the USB bus while no game runs.
+
+- **Not root.** `usbpipe` runs as the NES app's user, in the group the head unit gives its USB device files to. It opens the one device the loader names and unbinds no driver.
+- **No port, no firewall rule.** The buttons go over the socket only the NES app can reach.
+- **A pad that cannot be read is left alone** after five tries in a row, until the next game.
+- **`usbpipe` is a program, not a script:** Node.js has no way to talk to usbfs. It is built from `src/usbpipe/main.go`, one file with no library beside Go's own, by `npm run build:usbpipe` on any computer, and is committed here as the Store installs it. It needs nothing of the head unit but its kernel.
+
+What has run, on a PC: the meaning of the packets against the kernel driver's, the pad found in a copy of what a head unit lists for an Xbox One S pad, and the whole way from a stand-in for `usbpipe` through the loader to the app in the emulator, where *Pad Test* lit the stand-in's buttons. `usbpipe` and `pad.js` have also read a real Xbox One S pad on a PC, in WSL, where the pad has no kernel driver either: the pad was switched on, and every button and the left stick's four directions, pressed by a person, were read as themselves (`node tools/pad-try.js`; [`CONTROLLER-HELPER.md`](CONTROLLER-HELPER.md) has the details). With `npm run emu -- --pad` that pad then played *Pad Test* in the emulator: its D-pad, View, Menu and A counted there, through this loader and the app as they are. **Nothing of this has run on a car.** What a PC cannot show is in the [main README](../README.md), "What still needs a car".
 
 ## Removing it
 
@@ -43,6 +63,8 @@ page.js          the page and its requests
 games.js         the app's games folder; what counts as a game; saving and removing one
 nft.js           the firewall rules
 sockgroup.js     the socket for the NES app alone
+pad.js           a USB gamepad: finding it, switching it on, what its packets mean
+usbpipe          the program that passes its packets on (built from src/usbpipe/main.go)
 check.js         the Store's check: the service answers
 cleanup.js       the firewall as it was (after a stop, before a removal)
 systemd/         clucraft-nes-loader.socket, clucraft-nes-loader.service

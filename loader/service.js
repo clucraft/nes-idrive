@@ -3,9 +3,10 @@
  * service.js - the NES game loader: lets the NES app open a page on the car Wi-Fi that takes games from a phone.
  *
  * An app cannot do this itself: the head unit's firewall drops every connection to it. This service runs as
- * root for two things only: the rule for the page's port in the firewall while the page is open (nft.js), and
+ * root for these things only: the rule for the page's port in the firewall while the page is open (nft.js),
  * starting the page as the NES app's own user (page.js), which is the process that listens on the car Wi-Fi
- * and writes the games, into the app's own folder.
+ * and writes the games, into the app's own folder, and starting the program that reads a USB gamepad, as that
+ * user too (further down).
  *
  * Started by the app's connection to /run/clucraft-nes-loader.sock (systemd socket activation, never at
  * boot); that socket is open to the NES app's group alone (sockgroup.js). A JSON object a line:
@@ -20,6 +21,18 @@
  * firewall rules go too; after PAGE_MINUTES without a game they go as well. With no connection and no page
  * for a while the service ends, until the app's next connection.
  *
+ * A third thing an app cannot do: read a USB gamepad. The head unit's kernel has no driver for one, and its
+ * USB devices are not an app's to open (pad.js). While a game runs the app may ask for one:
+ *
+ *   {"cmd":"pad"}              -> the same answer, with "pad":{"on":true,"name":"Controller" or null,"buttons":<bits>}
+ *                                 and {"event":"pad","pad":{...}} to that connection whenever a pad is plugged in
+ *                                 or pulled out, and whenever its buttons change (the bits: pad.js, PAD)
+ *   {"cmd":"pad","on":false}   -> no more of it
+ *
+ * The pad is read for the connection that asked, and no longer. The program that reads it (usbpipe) runs as
+ * the NES app's user in the group the head unit gives its USB devices to, not as root, and no port and no
+ * firewall rule comes with it.
+ *
  * Part of nes-idrive (GPL-2.0-or-later). Runs on the head unit's Node 8.
  */
 const net = require('net');
@@ -30,13 +43,17 @@ const crypto = require('crypto');
 const { fork } = require('child_process');
 const games = require('./games');
 const firewall = require('./nft');
+const pads = require('./pad');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often
 const IDLE_MS = 2 * 60 * 1000;
 const KEPT = 30;                    // games named in the page's status
+const PAD_SCAN_MS = 2000;           // a gamepad plugged in while a game runs is found within this
+const PAD_SHORT_MS = 3000;          // a gamepad's helper that ends sooner than this did not work...
+const PAD_TRIES = 5;                // ...and after this many in a row it is not started again for this game
 
 /**
  * The car Wi-Fi: the interfaces a phone reaches the head unit on, [{ name, address }], the hotspot's first.
@@ -57,21 +74,26 @@ function carWifi(only) {
 
 /**
  * opts: { listen: a path or { fd }, oapDir, port, interfaces: [names] (else the car Wi-Fi's), nft: the program
- *         (null: the firewall is left alone), asSelf: the page runs as this process's user, pageMinutes, idleMs,
- *         refreshMs, exit: false to stay (tests), log }
+ *         (null: the firewall is left alone), asSelf: the page and the gamepad's helper run as this process's
+ *         user, pageMinutes, idleMs, refreshMs, exit: false to stay (tests), log,
+ *         padPipe: [the gamepad's helper program, arguments...], padFind(): the pads plugged in, padScanMs,
+ *         padEnv: the helper's environment }
  */
 function createService(opts) {
-    const o = Object.assign({ port: PORT, nft: 'nft', pageMinutes: PAGE_MINUTES, idleMs: IDLE_MS, refreshMs: REFRESH_MS }, opts || {});
+    const o = Object.assign({ port: PORT, nft: 'nft', pageMinutes: PAGE_MINUTES, idleMs: IDLE_MS, refreshMs: REFRESH_MS,
+        padPipe: [path.join(__dirname, 'usbpipe')], padFind: pads.find, padScanMs: PAD_SCAN_MS }, opts || {});
     const log = o.log || ((s) => console.log(s));
     const connections = new Set();
-    let page = null, lastUse = Date.now(), stopping = false, whyClosed = null;
+    let page = null, pad = null, lastUse = Date.now(), stopping = false, whyClosed = null;
 
     const view = () => (page
         ? { open: true, url: page.urls[0] || null, urls: page.urls, until: page.until, firewall: page.firewall, saved: page.saved, note: page.note }
         : { open: false, why: whyClosed });
-    const status = () => ({ ok: true, version: VERSION, app: !!games.findApp(o.oapDir), page: view() });
+    const padView = () => (pad ? { on: true, name: pad.dev ? pad.dev.name : null, buttons: pad.buttons, error: pad.error } : { on: false });
+    const status = () => ({ ok: true, version: VERSION, app: !!games.findApp(o.oapDir), page: view(), pad: padView() });
     const say = (c, obj) => { if (c && !c.destroyed) { try { c.write(JSON.stringify(obj) + '\n'); } catch (e) { /* gone */ } } };
     const changed = () => { if (page) say(page.owner, { event: 'page', page: view() }); };
+    const padChanged = () => { if (pad) say(pad.owner, { event: 'pad', pad: padView() }); };
 
     /** the car Wi-Fi as it is now: the port open on it, the page listening on it, its address for the code */
     function refresh() {
@@ -151,6 +173,57 @@ function createService(opts) {
         lastUse = Date.now();
     }
 
+    /* ---------- a USB gamepad, for as long as the app asks ---------- */
+    /** the pad that is plugged in, when one is and none is read yet: its buttons to the app from now on */
+    function padScan() {
+        if (!pad || pad.reader || pad.error) return;
+        const mine = pad;
+        let dev = null, as = {};
+        try { dev = (o.padFind() || [])[0] || null; } catch (e) { log('gamepad: ' + e.message); }
+        if (!dev) return;
+        if (!o.asSelf) {
+            // its helper is not root: the NES app's user, in the group that may open the head unit's USB devices
+            try { as = { uid: mine.app.uid, gid: fs.statSync(dev.node).gid }; } catch (e) { log('gamepad: ' + dev.node + ': ' + (e.code || e.message)); return; }
+        }
+        const startT = Date.now();
+        mine.dev = dev;
+        log('gamepad: ' + dev.name + ' (' + ('000' + dev.vid.toString(16)).slice(-4) + ':' + ('000' + dev.pid.toString(16)).slice(-4) + ') at ' + dev.node);
+        mine.reader = pads.open(dev, {
+            pipe: o.padPipe, as, env: o.padEnv, log: (s) => log('gamepad: ' + s),
+            onButtons: (b) => { if (pad === mine && mine.buttons !== b) { mine.buttons = b; padChanged(); } },
+            onClose: (why, unplugged) => {
+                if (pad !== mine) return;
+                mine.reader = null; mine.dev = null; mine.buttons = 0;
+                mine.fails = !unplugged && Date.now() - startT < PAD_SHORT_MS ? mine.fails + 1 : 0;
+                if (mine.fails >= PAD_TRIES) mine.error = 'The gamepad cannot be read: ' + why;
+                log('gamepad: ' + why + (mine.error ? ' (' + PAD_TRIES + ' times: not tried again for this game)' : ''));
+                padChanged();
+            },
+        });
+        padChanged();
+    }
+
+    function padOn(owner) {
+        const app = o.asSelf ? null : games.findApp(o.oapDir);
+        if (!o.asSelf && !(app && app.uid > 0)) return { ok: false, error: 'The NES app is not installed' };
+        if (pad) { pad.owner = owner; return status(); }        // asked already: it is this connection's now
+        const mine = pad = { owner, app, reader: null, dev: null, buttons: 0, fails: 0, error: null, timer: null };
+        mine.timer = setInterval(padScan, o.padScanMs);
+        log('gamepad: the app asks for one');
+        padScan();
+        return status();
+    }
+
+    function padOff(why) {
+        if (!pad) return;
+        const was = pad;
+        pad = null;
+        clearInterval(was.timer);
+        if (was.reader) was.reader.close();
+        log('gamepad: no longer read' + (why ? ': ' + why : ''));
+        lastUse = Date.now();
+    }
+
     function onLine(c, line) {
         let m = null;
         try { m = JSON.parse(line); } catch (e) { /* below */ }
@@ -159,6 +232,11 @@ function createService(opts) {
         if (m.cmd === 'status') return say(c, status());
         if (m.cmd === 'open') return say(c, openPage(c));
         if (m.cmd === 'close') { if (page && page.owner === c) closePage('closed by the app'); return say(c, status()); }
+        if (m.cmd === 'pad') {
+            if (m.on !== false) return say(c, padOn(c));
+            if (pad && pad.owner === c) padOff('the app says so');
+            return say(c, status());
+        }
         say(c, { ok: false, error: 'unknown: ' + m.cmd.slice(0, 20) });
     }
 
@@ -177,12 +255,13 @@ function createService(opts) {
             connections.delete(c);
             lastUse = Date.now();
             if (page && page.owner === c) closePage('the app left');
+            if (pad && pad.owner === c) padOff('the app left');
         });
     });
     server.on('error', (e) => { log('socket: ' + e.message); stop(1); });
 
     const idle = setInterval(() => {
-        if (!page && !connections.size && Date.now() - lastUse > o.idleMs) { log('nothing to do: ending until the app asks again'); stop(0); }
+        if (!page && !pad && !connections.size && Date.now() - lastUse > o.idleMs) { log('nothing to do: ending until the app asks again'); stop(0); }
     }, Math.min(10000, Math.max(50, o.idleMs / 2)));
 
     function stop(code) {
@@ -190,6 +269,7 @@ function createService(opts) {
         stopping = true;
         clearInterval(idle);
         closePage('the service ends');
+        padOff('the service ends');
         connections.forEach((c) => c.destroy());
         try { server.close(); } catch (e) { /* not listening */ }
         if (o.exit !== false) setTimeout(() => process.exit(code || 0), 100);
