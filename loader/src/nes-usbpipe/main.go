@@ -1,9 +1,9 @@
 //go:build linux && (amd64 || arm64)
 
-// usbpipe: one interface of a USB device, as lines of hex on stdin and stdout.
+// nes-usbpipe: one interface of a USB device, as lines of hex on stdin and stdout.
 //
-//	usbpipe <device node> <interface> <IN endpoint, hex> <OUT endpoint, hex> [<packet bytes>]
-//	usbpipe /dev/bus/usb/001/004 0 82 02 64
+//	nes-usbpipe <device node> <interface> <IN endpoint, hex> <OUT endpoint, hex> [<packet bytes>]
+//	nes-usbpipe /dev/bus/usb/001/004 0 82 02 64
 //
 // Every packet the device sends on the IN endpoint is one line on stdout; every line on stdin is a
 // packet for the OUT endpoint. Both are interrupt endpoints. What the packets mean is not known here:
@@ -14,7 +14,7 @@
 // Through Linux's usbfs, with asynchronous requests: a packet is never lost between two reads, and
 // the program never waits where a signal cannot reach it. It unbinds no kernel driver unless
 // USBPIPE_DETACH=1 says so (a PC, whose kernel has a driver for the pad; the head unit has none).
-// Nothing but this file: no library, no C. tools/build-usbpipe.js builds it into loader/usbpipe.
+// Nothing but this file: no library, no C. tools/build-usbpipe.js builds it into loader/nes-usbpipe.
 //
 // Part of nes-idrive (GPL-2.0-or-later).
 package main
@@ -76,7 +76,7 @@ func fail(code int, why string) {
 
 // a line for whoever reads this program's stderr (the loader's log)
 func say(what string) {
-	os.Stderr.WriteString("usbpipe: " + what + "\n")
+	os.Stderr.WriteString("nes-usbpipe: " + what + "\n")
 }
 
 func ioctl(fd int, request uintptr, arg uintptr) syscall.Errno {
@@ -110,7 +110,7 @@ func number(text string, radix int, what string) int {
 func main() {
 	a := os.Args[1:]
 	if len(a) < 4 || len(a) > 5 {
-		fail(2, "usage: usbpipe <device node> <interface> <IN endpoint, hex> <OUT endpoint, hex> [<packet bytes>]")
+		fail(2, "usage: nes-usbpipe <device node> <interface> <IN endpoint, hex> <OUT endpoint, hex> [<packet bytes>]")
 	}
 	iface, in, out, packet := number(a[1], 10, "interface"), number(a[2], 16, "IN endpoint"), number(a[3], 16, "OUT endpoint"), 64
 	if len(a) == 5 {

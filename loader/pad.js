@@ -3,8 +3,8 @@
  * pad.js - a USB gamepad for the NES app.
  *
  * The head unit's kernel has no driver for one (no HID, no evdev, no joystick driver): a pad that is plugged
- * in is listed on the USB bus, and that is all. So its packets are read here, through usbfs: usbpipe, a small
- * program beside this file (src/usbpipe/main.go), hands them over as lines of hex and takes lines of hex for
+ * in is listed on the USB bus, and that is all. So its packets are read here, through usbfs: nes-usbpipe, a small
+ * program beside this file (src/nes-usbpipe/main.go), hands them over as lines of hex and takes lines of hex for
  * the pad. What the packets mean is known here, where it can be tested without a pad.
  *
  * Pads known: Xbox One and Xbox Series pads on a cable, and other makes' pads that speak their protocol
@@ -147,7 +147,7 @@ function find(opts) {
 
 /* ---------- reading one ---------- */
 /**
- * opts: { pipe: [the usbpipe program, arguments before its own...], as: { uid, gid } to run it as, env,
+ * opts: { pipe: [the nes-usbpipe program, arguments before its own...], as: { uid, gid } to run it as, env,
  *         onButtons(bits), onClose(why), log(line) }
  */
 function open(dev, opts) {
@@ -192,7 +192,7 @@ function open(dev, opts) {
         }
     });
     child.on('error', (e) => end('its helper did not start: ' + (e.code || e.message)));
-    // (when all it wrote is read: usbpipe ends with 1 when the pad is gone, and says on stderr what else ended it)
+    // (when all it wrote is read: nes-usbpipe ends with 1 when the pad is gone, and says on stderr what else ended it)
     child.on('close', (code, signal) => end(code === 1 ? 'unplugged' : 'its helper ended (' + (signal || code) + ')' + (lastErr ? ': ' + lastErr : ''), code === 1));
     send(gip.start());
     return { close() { if (over) return; over = true; stop(); } };

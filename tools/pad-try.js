@@ -1,7 +1,7 @@
 'use strict';
 /**
  * A gamepad plugged into this computer, read as the NES game loader reads one on the head unit
- * (loader/pad.js and loader/usbpipe): its buttons as they change, as the pad's own and as the NES pad's.
+ * (loader/pad.js and loader/nes-usbpipe): its buttons as they change, as the pad's own and as the NES pad's.
  *
  *   node tools/pad-try.js [--seconds 60] [--idle 20] [--raw]
  *                                    --raw: every packet the pad sends, too
@@ -9,13 +9,13 @@
  *
  * tools/emu.js --pad uses the same pad for the emulator's app (forLoader() below).
  *
- * The pad must have no kernel driver, as on the head unit, and usbpipe must be allowed to open it:
+ * The pad must have no kernel driver, as on the head unit, and nes-usbpipe must be allowed to open it:
  *
  *   Windows  Hand the pad to WSL 2, whose kernel has no driver for it, with usbipd-win
  *            (https://github.com/dorssel/usbipd-win):
  *              usbipd bind --force --hardware-id 045e:02ea    once, as administrator
  *              usbipd attach --wsl --hardware-id 045e:02ea    each time, with WSL running
- *            usbpipe then runs in WSL, as root. An Xbox One S pad needs the --force: without it the pad was
+ *            nes-usbpipe then runs in WSL, as root. An Xbox One S pad needs the --force: without it the pad was
  *            in WSL for half a second each time and gone again. Windows has no use of a pad bound that way,
  *            until "usbipd unbind --hardware-id 045e:02ea" (as administrator) gives it back.
  *   Linux    The kernel's own driver (xpad) has the pad: take it away first, and run this as root:
@@ -31,7 +31,7 @@ const { BTN } = require(path.join(ROOT, 'app', 'nes-core'));
 
 const WSL = process.platform === 'win32';
 const SYS = '/sys/bus/usb/devices';
-const PROGRAM = path.join(ROOT, 'loader', 'usbpipe');
+const PROGRAM = path.join(ROOT, 'loader', 'nes-usbpipe');
 
 /** WSL's list of USB devices, read in one go, for loader/pad.js to look through as it does the head unit's */
 function wslDevices() {
@@ -58,7 +58,7 @@ function wslDevices() {
 
 /** the pads of this computer that are free to read, as loader/pad.js finds them on the head unit */
 const findHere = () => pads.find(WSL ? { io: wslDevices() } : {});
-/** usbpipe, as it is started here: in WSL as root on Windows */
+/** nes-usbpipe, as it is started here: in WSL as root on Windows */
 const pipeHere = () => (WSL ? ['wsl.exe', '-u', 'root', '-e', '/mnt/' + PROGRAM[0].toLowerCase() + PROGRAM.slice(2).replace(/\\/g, '/')] : [PROGRAM]);
 /** for the loader beside the emulator (tools/loader-dev.js, start({ service })): a real pad in place of none */
 const forLoader = () => ({ padFind: () => { try { return findHere(); } catch (e) { return []; } }, padPipe: pipeHere(), padEnv: process.env });
@@ -113,7 +113,7 @@ function main() {
             if (r.buttons !== undefined && r.buttons !== buttons) { buttons = r.buttons; told(buttons); }
         }
     });
-    child.on('close', (code, signal) => done((code === 1 ? 'the pad is gone' : 'usbpipe ended (' + (signal || code) + ')') + ', ' + packets + ' packet(s) from the pad', code ? 1 : 0));
+    child.on('close', (code, signal) => done((code === 1 ? 'the pad is gone' : 'nes-usbpipe ended (' + (signal || code) + ')') + ', ' + packets + ' packet(s) from the pad', code ? 1 : 0));
     send(gip.start());
     stop = () => { try { child.stdin.end(); } catch (e) { /* gone */ } };
 }

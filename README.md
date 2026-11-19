@@ -163,7 +163,7 @@ Both run without a game, a browser or the kit. They cover:
 - the games and saves on disk: the app's packs, the data folder and a USB stick's folder, titles, state, battery memory, the game played last
 - the two games that come with the app, played in the emulator: every button of Pad Test lights and counts, and Snake is steered to an apple, paused, run into a wall and started again
 - games from a phone: the QR code against a reference encoder's, and the NES game loader from the app's request to a game sent over HTTP, with a stand-in for the head unit's firewall program: what it takes and refuses, where it writes, the firewall rules while the page is open and after (not on Windows)
-- a USB gamepad: the packets that switch an Xbox pad on and what its reports mean, as the Linux kernel's driver has them; the pad found on the USB bus as a head unit lists it; and its buttons from a stand-in for the program that reads it, through the loader to the app, with the pad pulled out and plugged in again and the game stopping. The program itself (`loader/usbpipe`) is not in the tests: `node tools/pad-try.js` runs it on a pad plugged into the PC
+- a USB gamepad: the packets that switch an Xbox pad on and what its reports mean, as the Linux kernel's driver has them; the pad found on the USB bus as a head unit lists it; and its buttons from a stand-in for the program that reads it, through the loader to the app, with the pad pulled out and plugged in again and the game stopping. The program itself (`loader/nes-usbpipe`) is not in the tests: `node tools/pad-try.js` runs it on a pad plugged into the PC
 - what the MGU Store reads: `mgu-repo.json`, and the package in `store/` being this `app/` at its version, with no SDK in it and no game but those two
 
 `test:node8` runs them on Node 8.17.0, as the head unit does. It downloads that Node release once from nodejs.org and checks it against the release's checksums.
@@ -290,7 +290,7 @@ For whoever maintains this repository. The Store installs what is committed in `
 3. `npm test` fails if `store/` is not the `app/` beside it.
 4. Commit `store/` with the change and push to `main`.
 
-The loader is installed as it is in `loader/`. A change to what it installs needs a new `version` in `loader/component.json` and `loader/service.js`. After a change to `loader/src/usbpipe/main.go`, `npm run build:usbpipe` builds `loader/usbpipe` again (it needs [Go](https://go.dev) and nothing else, on any computer); commit the two together.
+The loader is installed as it is in `loader/`. A change to what it installs needs a new `version` in `loader/component.json` and `loader/service.js`. After a change to `loader/src/nes-usbpipe/main.go`, `npm run build:usbpipe` builds `loader/nes-usbpipe` again (it needs [Go](https://go.dev) and nothing else, on any computer); commit the two together.
 
 ## What still needs a car
 
@@ -327,7 +327,7 @@ core/                 the emulator's build: mgu_libretro.c (a libretro frontend 
 docs/                 screenshots
 games/                the source of the two games that come with the app, and their build (cc65)
 loader/               the NES game loader: the service that opens the page for games from a phone
-                      and reads a USB gamepad; usbpipe is its program for that (src/usbpipe/: Go)
+                      and reads a USB gamepad; nes-usbpipe is its program for that (src/nes-usbpipe/: Go)
 patches/idrive7-apps/ the emulator on Windows, applied by tools/setup.js
 mgu-repo.json         what the MGU Store reads: the app, what it needs, where its package is;
                       the loader as an optional tool
@@ -338,7 +338,7 @@ test/run.js           tests of the emulator, the controls, the saves, the two ga
                       store/ (Node 8 and current); fake-nft.js stands in for the firewall program,
                       fake-usbpipe.js for a gamepad
 tools/                setup.js, emu.js, build-car.js, node8.js; build-store.js and tar.js (store/);
-                      loader-dev.js (the loader beside the emulator); build-usbpipe.js (loader/usbpipe);
+                      loader-dev.js (the loader beside the emulator); build-usbpipe.js (loader/nes-usbpipe);
                       pad-try.js (a gamepad plugged into the PC, read as on the head unit);
                       prebuilt.js (the Store's build step on the head unit: the package is there)
 vendor/idrive7-apps   submodule: the MGU app kit, emulator and installer

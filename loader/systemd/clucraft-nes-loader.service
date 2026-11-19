@@ -11,7 +11,7 @@ StartLimitBurst=10
 
 [Service]
 # root, for these things: the page's port in the firewall (nft) while the page is open, starting the page
-# itself as the NES app's own user, and starting the program that reads a USB gamepad (usbpipe) as that user
+# itself as the NES app's own user, and starting the program that reads a USB gamepad (nes-usbpipe) as that user
 # too. The page (page.js) is the process that listens on the car Wi-Fi.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/node /var/opt/clucraft-nes-loader/current/service.js

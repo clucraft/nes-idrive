@@ -29,7 +29,7 @@
  *                                 or pulled out, and whenever its buttons change (the bits: pad.js, PAD)
  *   {"cmd":"pad","on":false}   -> no more of it
  *
- * The pad is read for the connection that asked, and no longer. The program that reads it (usbpipe) runs as
+ * The pad is read for the connection that asked, and no longer. The program that reads it (nes-usbpipe) runs as
  * the NES app's user in the group the head unit gives its USB devices to, not as root, and no port and no
  * firewall rule comes with it.
  *
@@ -81,7 +81,7 @@ function carWifi(only) {
  */
 function createService(opts) {
     const o = Object.assign({ port: PORT, nft: 'nft', pageMinutes: PAGE_MINUTES, idleMs: IDLE_MS, refreshMs: REFRESH_MS,
-        padPipe: [path.join(__dirname, 'usbpipe')], padFind: pads.find, padScanMs: PAD_SCAN_MS }, opts || {});
+        padPipe: [path.join(__dirname, 'nes-usbpipe')], padFind: pads.find, padScanMs: PAD_SCAN_MS }, opts || {});
     const log = o.log || ((s) => console.log(s));
     const connections = new Set();
     let page = null, pad = null, lastUse = Date.now(), stopping = false, whyClosed = null;
@@ -99,11 +99,13 @@ function createService(opts) {
     function refresh() {
         if (!page) return;
         const wifi = carWifi(o.interfaces);
+        // (an interface with two addresses is one interface to the firewall)
+        const names = wifi.map((i) => i.name).filter((n, i, all) => all.indexOf(n) === i);
         const before = JSON.stringify([page.urls, page.firewall, page.note]);
         if (o.nft) {
-            const r = firewall.open(wifi.map((i) => i.name), o.port, { program: o.nft, last: page.signature });
+            const r = firewall.open(names, o.port, { program: o.nft, last: page.signature });
             page.signature = r.errors.length ? null : r.signature;
-            page.firewall = r.errors.length ? 'failed: ' + r.errors[0] : wifi.length ? 'open on ' + wifi.map((i) => i.name).join(', ') : 'nothing to open';
+            page.firewall = r.errors.length ? 'failed: ' + r.errors[0] : names.length ? 'open on ' + names.join(', ') : 'nothing to open';
             if (r.changed || r.errors.length) log('firewall: ' + page.firewall);
         } else page.firewall = 'left alone';
         try { page.child.send({ op: 'listen', addresses: wifi.map((i) => i.address) }); } catch (e) { /* it is going */ }

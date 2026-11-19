@@ -3,6 +3,6 @@
 *.wasm binary
 *.tgz binary
 *.nes binary
-loader/usbpipe binary
+loader/nes-usbpipe binary
 *.patch text eol=lf
 *.sh text eol=lf

@@ -46,11 +46,11 @@ function chains(listing) {
     return found;
 }
 
-/** the rules a chain needs for these interfaces and this port, as nft's words */
+/** the rules a chain needs for these interfaces and this port, as nft's words (an interface named twice, for its two addresses, gets one) */
 function rulesFor(hook, interfaces, port) {
     const way = hook === 'input' ? ['iifname', 'dport'] : hook === 'output' ? ['oifname', 'sport'] : null;
     if (!way || !(port > 0 && port < 65536)) return [];
-    return interfaces.filter((i) => /^[A-Za-z0-9_.:-]{1,15}$/.test(i)).map((i) => [way[0], '"' + i + '"', 'tcp', way[1], String(port), 'accept', 'comment', '"' + TAG + '"']);
+    return interfaces.filter((i, n) => interfaces.indexOf(i) === n && /^[A-Za-z0-9_.:-]{1,15}$/.test(i)).map((i) => [way[0], '"' + i + '"', 'tcp', way[1], String(port), 'accept', 'comment', '"' + TAG + '"']);
 }
 
 const ours = (c) => (c.family === 'ip' || c.family === 'inet') && (c.hook === 'input' || c.hook === 'output');

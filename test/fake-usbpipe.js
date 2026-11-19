@@ -1,11 +1,11 @@
 'use strict';
-// A stand-in for loader/usbpipe, for test/run.js: a USB gamepad that is switched on by what the loader sends
+// A stand-in for loader/nes-usbpipe, for test/run.js: a USB gamepad that is switched on by what the loader sends
 // it, and then presses buttons.
 //
 //   node fake-usbpipe.js <log file> <what the pad does> <device node> <interface> <IN> <OUT> <packet bytes>
 //
 // What the pad does, once it is switched on, separated by commas: a packet in hex is sent, "ms<n>" waits that
-// long, "pulled" waits for the test to pull the pad out (a file <log file>.pull) and ends as usbpipe does then
+// long, "pulled" waits for the test to pull the pad out (a file <log file>.pull) and ends as nes-usbpipe does then
 // (exit 1). The log gets "args ..." at the start, every packet for the pad as "out <hex>", "gone" when it is
 // pulled out, and "end" when stdin ends (the loader lets go of the pad).
 const fs = require('fs');

@@ -243,13 +243,13 @@ function writePack(file, files) {
         assert.strictEqual(b(report(0, 0, far - 2, 2 - far)), 0, 'a stick at rest, or not far out');
         assert.strictEqual(b(report(0x10, 0).slice(0, 8)), P.A, 'a report without the sticks');
         [Buffer.alloc(0), Buffer.from([0x20, 0, 1]), Buffer.from([0x20, 0, 1, 2, 0x10]), Buffer.from([0x03, 0x20, 1, 4, 0x80, 0, 0, 0]), null].forEach((d) => assert.deepStrictEqual(g.packet(d), {}));
-        // what an Xbox One S pad sent, read through usbpipe, once it was switched on: its report with nothing held and
+        // what an Xbox One S pad sent, read through nes-usbpipe, once it was switched on: its report with nothing held and
         // the sticks where they rest (a little off the middle), and every 20 seconds a packet that is no report
         assert.strictEqual(b(Buffer.from('20000c0e0000000000004906a7027c020cf8', 'hex')), 0);
         assert.deepStrictEqual(g.packet(Buffer.from('0320430480010000', 'hex')), {});
     });
     await check('gamepad: the packets a real Xbox One S pad sent for its buttons and its left stick are read as those', () => {
-        // (captured through loader/usbpipe with tools/pad-try.js --raw, a button or a direction held at a time)
+        // (captured through loader/nes-usbpipe with tools/pad-try.js --raw, a button or a direction held at a time)
         const g = new loader.pad.Gip(XBOX_ONE_S), P = loader.pad.PAD;
         const sent = {
             '2000230e8000000000004906a7027c020cf8': P.Y, '2000410e0400000000004906a7027c020cf8': P.START, '2000470e0800000000004906a7027c020cf8': P.SELECT,
@@ -493,6 +493,7 @@ function writePack(file, files) {
         assert.deepStrictEqual(loader.nft.rulesFor('input', ['wlan_bridge', 'x"; drop'], 8493).map((r) => r.join(' ')), ['iifname "wlan_bridge" tcp dport 8493 accept comment "clucraft-nes-loader"']);
         assert.deepStrictEqual(loader.nft.rulesFor('output', ['uap0'], 8493).map((r) => r.join(' ')), ['oifname "uap0" tcp sport 8493 accept comment "clucraft-nes-loader"']);
         assert.deepStrictEqual(loader.nft.rulesFor('forward', ['uap0'], 8493), []);
+        assert.strictEqual(loader.nft.rulesFor('input', ['uap0', 'wlan_bridge', 'uap0'], 8493).length, 2, 'an interface with two addresses is named twice: one rule for it');
     });
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const until = async (what, fn) => { for (let i = 0; i < 100; i++) { if (fn()) return; await sleep(50); } throw new Error('never: ' + what); };
@@ -666,7 +667,7 @@ function writePack(file, files) {
             await check('gamepad: a program that cannot read the pad is not started over and over; a loader from before gamepads is asked once', async () => {
                 const said = [];
                 const broken = loader.service.createService({ listen: sock('pad-broken'), nft: null, asSelf: true, exit: false, idleMs: 1e9, padScanMs: 20, padFind: () => [dev],
-                    padPipe: [process.execPath, '-e', 'console.error("usbpipe: interface 0 of /dev/bus/usb/001/004: permission denied"); process.exit(2)'], padEnv: process.env, log: (s) => said.push(s) });
+                    padPipe: [process.execPath, '-e', 'console.error("nes-usbpipe: interface 0 of /dev/bus/usb/001/004: permission denied"); process.exit(2)'], padEnv: process.env, log: (s) => said.push(s) });
                 const p = new Pad({ socket: sock('pad-broken'), log, onMask: (m) => seen.push(m) });
                 try {
                     p.start();
@@ -785,12 +786,12 @@ function writePack(file, files) {
         assert.strictEqual(spec.config.loaderSocket, require(path.join(ROOT, 'app/phone')).SOCKET);
         assert.strictEqual(require(path.join(ROOT, 'loader/games')).APP, spec.id, 'the loader looks for another app');
         // the program that reads a gamepad: for the head unit's processor, needing no library of the head unit's
-        // (tools/build-usbpipe.js builds it from loader/src/usbpipe/main.go)
-        const pipe = fs.readFileSync(path.join(ROOT, tool.path, 'usbpipe'));
-        assert(c.files.some((f) => f.path === 'usbpipe' && f.mode === '0755'), 'usbpipe is installed as a program');
-        assert(pipe.slice(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && pipe[4] === 2 && pipe[5] === 1 && pipe.readUInt16LE(16) === 2 && pipe.readUInt16LE(18) === 0x3e, 'usbpipe is a 64-bit x86 Linux program');
+        // (tools/build-usbpipe.js builds it from loader/src/nes-usbpipe/main.go)
+        const pipe = fs.readFileSync(path.join(ROOT, tool.path, 'nes-usbpipe'));
+        assert(c.files.some((f) => f.path === 'nes-usbpipe' && f.mode === '0755'), 'nes-usbpipe is installed as a program');
+        assert(pipe.slice(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && pipe[4] === 2 && pipe[5] === 1 && pipe.readUInt16LE(16) === 2 && pipe.readUInt16LE(18) === 0x3e, 'nes-usbpipe is a 64-bit x86 Linux program');
         const heads = pipe.readUInt32LE(32), headSize = pipe.readUInt16LE(54), headCount = pipe.readUInt16LE(56);   // (the program headers; none names a loader for libraries: type 3)
-        for (let i = 0; i < headCount; i++) assert.notStrictEqual(pipe.readUInt32LE(heads + i * headSize), 3, 'usbpipe needs libraries: build it with tools/build-usbpipe.js');
+        for (let i = 0; i < headCount; i++) assert.notStrictEqual(pipe.readUInt32LE(heads + i * headSize), 3, 'nes-usbpipe needs libraries: build it with tools/build-usbpipe.js');
     });
     await check('store: the on-unit build passes with only the files an install downloads, and says what is wrong without the package', () => {
         const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'nes-store-'));
