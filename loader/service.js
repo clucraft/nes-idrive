@@ -49,7 +49,7 @@ const games = require('./games');
 const firewall = require('./nft');
 const pads = require('./pad');
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often
@@ -145,12 +145,24 @@ function createService(opts) {
         }
         // the page runs as the app's user; if that were root (it never is on a head unit), there is no page
         if (!o.asSelf && !(app.uid > 0 && app.gid > 0)) return { ok: false, error: 'The NES app\'s folder belongs to root: no page as root' };
+        // It is started inside the app's data folder and names the games folder from there. The app's user
+        // alone does not get that far: the way leads through a folder that opens to a group the head unit gives
+        // its apps' processes, and a process started as another user keeps no such group. The data folder is
+        // the app's to write in already, so being put there gives the page nothing the app has not. A link in
+        // its place is not followed (the app cannot put one there: its own folder is not its to write in).
+        try {
+            const st = o.asSelf ? fs.statSync(app.data) : fs.lstatSync(app.data);
+            if (!st.isDirectory()) throw new Error('not a folder');
+        } catch (e) {
+            log('no page: ' + app.data + ': ' + (e.code || e.message));
+            return { ok: false, error: 'The NES app has no data folder: ' + (e.code || e.message) };
+        }
         const token = crypto.randomBytes(10).toString('hex');
         const as = o.asSelf ? {} : { uid: app.uid, gid: app.gid };
         let child;
         try {
-            child = fork(path.join(__dirname, 'page.js'), [JSON.stringify({ token, port: o.port, dir: app.games })],
-                Object.assign({ cwd: '/', env: { PATH: process.env.PATH || '/usr/bin:/bin' }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'], execArgv: [] }, as));
+            child = fork(path.join(__dirname, 'page.js'), [JSON.stringify({ token, port: o.port, dir: games.GAMES })],
+                Object.assign({ cwd: app.data, env: { PATH: process.env.PATH || '/usr/bin:/bin' }, stdio: ['ignore', 'inherit', 'inherit', 'ipc'], execArgv: [] }, as));
         } catch (e) {
             log('the page did not start: ' + e.message);
             return { ok: false, error: 'The page did not start: ' + (e.code || e.message) };
@@ -158,6 +170,7 @@ function createService(opts) {
         const mine = page = { token, child, owner, joined, until: Date.now() + o.pageMinutes * 60000, urls: [], nets: [], firewall: null, saved: [], note: null, signature: null, timer: null };
         child.on('message', (m) => {
             if (page !== mine || !m) return;
+            if (m.event === 'folder') return log('the page cannot use the games folder: ' + String(m.error).slice(0, 80));
             if (m.event === 'saved' || m.event === 'removed' || m.event === 'refused') {
                 lastUse = Date.now();
                 mine.until = Date.now() + o.pageMinutes * 60000;
@@ -168,7 +181,8 @@ function createService(opts) {
                 if (m.error) log('the page cannot listen on ' + m.error);
             } else if (m.event === 'strangers') closePage('too many requests without the code');
         });
-        child.on('error', (e) => log('the page: ' + e.message));
+        // (a page that could not be started says so here, and never ends: it is closed as one that ended)
+        child.on('error', (e) => { log('the page: ' + e.message); if (page === mine && /^spawn/.test(e.syscall || '')) { mine.child = null; closePage('the page did not start (' + (e.code || e.message) + ')'); } });
         child.on('exit', (code, signal) => { if (page === mine) { mine.child = null; closePage('the page ended (' + (signal || code) + ')'); } });
         mine.timer = setInterval(() => {
             if (page !== mine) return;

@@ -77,7 +77,7 @@ reads the rest of an Xbox pad's report too, for a program that wants a pad with 
   own app's group, which starts the USB program as that app's user with the group of the pad's device
   file. Its copy of the program should have a file name of its own: the head unit's crash handler knows
   a tool's programs by their file names, and two tools with one name between them have not been tried.
-- **Not on a car yet.** The car ran 0.2.0. What 0.2.1 sends the NES app is the same, by the tests.
+- **Not on a car yet.** The car ran the pad with 0.2.0. What 0.2.1 sends the NES app is the same, by the tests.
 
 ## Open, in the order to settle them
 
@@ -110,8 +110,10 @@ reads the rest of an Xbox pad's report too, for a program that wants a pad with 
 2. **On the car: done, on one car** (2026-11-19, the head unit looked at above). The app (0.4.0) and
    the loader (0.2.0) installed from the Store, *USB gamepad* switched on, the Xbox One S pad plugged
    in: its owner reports that the gamepad works. Two of the things that could go wrong there and
-   nowhere else did not: the Store installed `nes-usbpipe` as a program that runs, and the app's user
-   was let at the device. Of the third, the head unit's recovery manager minding the extra process,
+   nowhere else did not: the Store installed `nes-usbpipe` as a program that runs, and a user that is
+   not root was let at the device, in the group of its device file. (Not the app's user, as was meant:
+   till 0.2.3 the loader took the owner of the app's folder for it, and on a car that is the Store's
+   user. Since 0.2.3 it is the app's own, in the same group; no car has run that.) Of the third, the head unit's recovery manager minding the extra process,
    nothing was seen. Not kept from that run: which buttons were tried, whether a pad pulled out and
    plugged in again came back, and the journal (`journalctl -u clucraft-nes-loader` has a `gamepad:`
    line for each step).

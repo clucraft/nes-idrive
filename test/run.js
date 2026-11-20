@@ -26,7 +26,7 @@ const net = require('net');
 const { qr } = require(path.join(ROOT, 'app/qr'));
 const { Phone } = require(path.join(ROOT, 'app/phone'));
 const { Pad, PAD, toNes } = require(path.join(ROOT, 'app/pad'));
-const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')) };
+const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')), page: require(path.join(ROOT, 'loader/page')) };
 
 let failed = 0;
 const check = async (name, fn) => {
@@ -514,6 +514,44 @@ function writePack(file, files) {
         assert.deepStrictEqual(loader.games.list(dir).map((g) => g.name).filter((n) => n !== 'Trap.nes'), ['my game.nes']);
         assert(loader.games.remove(dir, 'MY GAME.nes') && !loader.games.remove(dir, 'my game.nes') && !loader.games.remove(dir, '../outside.txt'));
     });
+    await check('loader: the app\'s user is the number in its folder\'s name, whoever owns the folder; no games folder yet is no games, one that cannot be read is an error', () => {
+        const oap = path.join(tmp, 'oap-names'), root = path.join(oap, 'oap_12244');
+        [oap, root, path.join(root, 'source'), path.join(root, 'data'), path.join(oap, 'oap_12201'), path.join(oap, 'notes')].forEach((d) => fs.mkdirSync(d));
+        assert.strictEqual(loader.games.findApp(oap), null, 'no app yet');
+        fs.writeFileSync(path.join(root, 'source', 'package.json'), JSON.stringify({ name: 'clucraft_nes' }));
+        const app = loader.games.findApp(oap);
+        assert.deepStrictEqual([app.root, app.data, app.games, app.uid], [root, path.join(root, 'data'), path.join(root, 'data', 'roms'), 12244]);
+        assert.deepStrictEqual(loader.games.list(app.games), []);
+        assert.strictEqual(loader.games.unusable(app.games), null, 'no folder yet, where one can be made');
+        assert.strictEqual(loader.games.unusable(path.join(app.games, 'deeper', 'still')), 'ENOENT');
+        if (process.platform !== 'win32' && process.getuid() !== 0) {
+            fs.mkdirSync(app.games);
+            fs.chmodSync(app.games, 0);
+            try {
+                assert.throws(() => loader.games.list(app.games), (e) => e.code === 'EACCES');
+                assert.strictEqual(loader.games.unusable(app.games), 'EACCES');
+            } finally { fs.chmodSync(app.games, 0o755); }
+        }
+        // the page says so to the phone, and to the service for the car's screen, in place of "no games"
+        const notAFolder = path.join(root, 'source', 'package.json'), told = [];
+        const page = loader.page.createPage({ token: 'a'.repeat(20), port: 1, dir: notAFolder, tell: (m) => told.push(m) });
+        const ask = (method, url, body) => new Promise((resolve) => {
+            const req = new (require('events'))();
+            Object.assign(req, { method, url, headers: {}, destroy() {} });
+            page.handle(req, { writeHead(code) { this.code = code; }, end(data) { resolve({ status: this.code, body: JSON.parse(String(data)) }); } });
+            if (body) { req.emit('data', body); req.emit('end'); }
+        });
+        const loud = console.error;
+        console.error = () => {};           // (the page tells its journal too)
+        return ask('GET', '/' + 'a'.repeat(20) + '/games').then((r) => {
+            assert.deepStrictEqual(r, { status: 500, body: { ok: false, error: 'The car cannot read its games folder (ENOTDIR)' } });
+            return ask('POST', '/' + 'a'.repeat(20) + '/games?name=A.nes', game);
+        }).then((r) => {
+            console.error = loud;
+            assert.deepStrictEqual(r, { status: 500, body: { ok: false, error: 'the car could not save it (ENOTDIR)' } });
+            assert.deepStrictEqual(told, [{ event: 'refused', name: 'A.nes', why: 'the car could not save it (ENOTDIR)' }]);
+        }, (e) => { console.error = loud; throw e; });
+    });
     await check('loader: the page is on the car\'s own Wi-Fi; on a Wi-Fi the car has joined only when the app asks, and that one is first then; never on the car\'s other networks', () => {
         const v4 = (address, internal) => [{ address, family: 'IPv4', internal: !!internal }, { address: 'fe80::1', family: 'IPv6', internal: !!internal }];
         // (as a head unit had them, on its owner's home Wi-Fi: its /sys/class/net and /proc/net/fib_trie)
@@ -672,6 +710,50 @@ function writePack(file, files) {
             phone.close();
             service.stop(0);
         }
+
+        // The folders as a car has them (read on one, 2026-11-20): the apps' folder opens to a group the head
+        // unit gives its apps' processes, the app's folder belongs to whoever installed it. A page started as the
+        // folder's owner, or outside it, answered a game with "the car could not save it (EACCES)" there.
+        if (process.getuid() !== 0) console.log('skip loader: the page as the app\'s own user, in an app\'s folder as a head unit has it (as root alone: wsl -u root)');
+        else await check('loader: as on a head unit, the page is the app\'s own user and saves a game in a folder that user cannot get to from outside', async () => {
+            const door = path.join(tmp, 'door'), root = path.join(door, 'oap_12244'), data = path.join(root, 'data'), roms = path.join(data, 'roms');
+            const dir = (d, mode, uid, gid) => { fs.mkdirSync(d); fs.chownSync(d, uid, gid); fs.chmodSync(d, mode); };
+            dir(door, 0o770, 8000, 903);
+            dir(root, 0o750, 12201, 12244);
+            dir(path.join(root, 'source'), 0o750, 12201, 12244);
+            dir(data, 0o770, 12201, 12244);
+            fs.writeFileSync(path.join(root, 'source', 'package.json'), JSON.stringify({ name: 'clucraft_nes' }));
+            const lines = [], at = path.join(tmp, 'door.sock');
+            const behind = loader.service.createService({ listen: at, oapDir: door, port: 18494, interfaces: ['lo'], nft: null, exit: false, refreshMs: 100, idleMs: 1e9, log: (s) => lines.push(s) });
+            const asker = new Phone({ socket: at, log });
+            try {
+                asker.open();
+                await until('the page', () => asker.state.step === 'open' && asker.state.page.url);
+                const url = asker.state.page.url;
+                let r = null;
+                for (let i = 0; i < 40 && !r; i++) { r = await request('GET', url + 'games').catch(() => null); if (!r) await sleep(50); }
+                assert(r, 'the page does not answer: ' + lines.join(' | '));
+                assert.deepStrictEqual([r.status, JSON.parse(r.body)], [200, { games: [] }]);
+                r = await request('POST', url + 'games?name=Behind.nes', game);
+                assert.strictEqual(r.status, 200, r.body + ' ' + lines.join(' | '));
+                const st = fs.statSync(path.join(roms, 'Behind.nes')), folder = fs.statSync(roms);
+                assert.deepStrictEqual([st.uid, st.gid, folder.uid, folder.gid], [12244, 12244, 12244, 12244], 'whose the game and its folder are');
+                assert(fs.readFileSync(path.join(roms, 'Behind.nes')).equals(game));
+                assert.deepStrictEqual(JSON.parse((await request('GET', url + 'games')).body), { games: [{ name: 'Behind.nes', size: game.length }] });
+                assert(lines.some((l) => /page open for .*as user 12244/.test(l)) && !lines.some((l) => /cannot use the games folder/.test(l)), lines.join(' | '));
+                asker.close();
+                await until('the page gone', () => behind.status().page.open === false);
+                // a link where the data folder was: root does not walk into what it points at
+                fs.renameSync(data, path.join(root, 'elsewhere'));
+                fs.symlinkSync(path.join(root, 'elsewhere'), data);
+                asker.open();
+                await until('an answer', () => asker.state.step === 'failed');
+                assert(/no data folder/.test(asker.state.error), asker.state.error);
+            } finally {
+                asker.close();
+                behind.stop(0);
+            }
+        });
     }
 
     /* ---------- a USB gamepad, from the program that reads it to the app (a stand-in for that program: test/fake-usbpipe.js) ---------- */

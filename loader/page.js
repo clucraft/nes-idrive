@@ -3,7 +3,9 @@
  * page.js - the page a phone opens to send games to the car.
  *
  * The service starts this as its own process, as the NES app's user and not as root: what the page can do
- * is what the app can, write into the app's own folder. It serves, under an address only the QR code on the
+ * is what the app can, write into the app's own folder. It is started inside the app's data folder and is
+ * told the games folder from there ("roms"): on a head unit that user does not get to the folder from
+ * outside (games.js has the folders as a car has them). It serves, under an address only the QR code on the
  * car's screen tells (http://<car Wi-Fi address>:<port>/<token>/):
  *
  *   GET    /<token>/                 the page
@@ -14,9 +16,10 @@
  * Anything else is "not found". It talks to the service over the channel fork() gives a child:
  *   from it   { op: 'listen', addresses: [...] }     the car Wi-Fi's addresses to serve on, whenever they change
  *   to it     { event: 'listening', addresses }, { event: 'saved', name, size, replaced }, { event: 'removed', name },
- *             { event: 'refused', name, why }, { event: 'strangers' } (many requests without the token)
+ *             { event: 'refused', name, why }, { event: 'strangers' } (many requests without the token),
+ *             { event: 'folder', error } (at its start: it cannot read or write the games folder)
  *
- *   node page.js '{"token": "...", "port": 8493, "dir": "<the games folder>"}'
+ *   node page.js '{"token": "...", "port": 8493, "dir": "<the games folder, from where it is started>"}'
  *
  * Part of the NES game loader (nes-idrive, GPL-2.0-or-later). Runs on the head unit's Node 8.
  */
@@ -67,9 +70,10 @@ const HTML = `<!doctype html>
     var x = new XMLHttpRequest();
     x.open('GET', base + 'games');
     x.onload = function () {
-      if (x.status !== 200) return gone();
       var a = answer(x);
+      if (x.status !== 200 && !a.error) return gone();
       list.textContent = '';
+      if (a.error) return item(list, a.error, 'bad');
       (a.games || []).forEach(function (g) {
         var li = item(list, g.name), s = document.createElement('small'), b = document.createElement('button');
         s.textContent = size(g.size);
@@ -168,9 +172,10 @@ function createPage(opts) {
                 tell(Object.assign({ event: 'saved' }, saved));
                 json(res, 200, Object.assign({ ok: true }, saved));
             } catch (e) {
-                if (e.refused) tell({ event: 'refused', name: games.safeName(name), why: e.message });
-                else console.error('nes loader page: saving ' + games.safeName(name) + ': ' + e.message);
-                json(res, e.refused ? 400 : 500, { ok: false, error: e.refused ? e.message : 'the car could not save it (' + (e.code || 'error') + ')' });
+                const why = e.refused ? e.message : 'the car could not save it (' + (e.code || 'error') + ')';
+                if (!e.refused) console.error('nes loader page: saving ' + games.safeName(name) + ': ' + e.message);
+                tell({ event: 'refused', name: games.safeName(name), why });          // (on the car's screen too)
+                json(res, e.refused ? 400 : 500, { ok: false, error: why });
             }
         });
     }
@@ -186,7 +191,10 @@ function createPage(opts) {
         if (rest === '' && req.method === 'GET') { res.writeHead(302, Object.assign({ Location: '/' + opts.token + '/', 'Content-Length': 0 }, HEADERS)); return res.end(); }
         if (rest === '/' && req.method === 'GET') return send(res, 200, 'text/html; charset=utf-8', HTML);
         if (rest !== '/games') return send(res, 404, 'text/html; charset=utf-8', CLOSED);
-        if (req.method === 'GET') return json(res, 200, { games: games.list(opts.dir) });
+        if (req.method === 'GET') {
+            // (a folder that cannot be read is not an empty one: the phone says so)
+            try { return json(res, 200, { games: games.list(opts.dir) }); } catch (e) { return json(res, 500, { ok: false, error: 'The car cannot read its games folder (' + (e.code || 'error') + ')' }); }
+        }
         if (req.method === 'POST') return receive(req, res, Array.isArray(name) ? name[0] : name);
         if (req.method === 'DELETE') {
             let removed = false;
@@ -229,7 +237,10 @@ if (require.main === module) {
         console.error('nes loader page: started without its token, port and folder');
         process.exit(2);
     }
-    const page = createPage({ token: config.token, port: config.port, dir: config.dir, tell: (m) => { if (process.connected) process.send(m); } });
+    const tell = (m) => { if (process.connected) process.send(m); };
+    const page = createPage({ token: config.token, port: config.port, dir: config.dir, tell });
+    const cannot = games.unusable(config.dir);
+    if (cannot) { console.error('nes loader page: the games folder ' + config.dir + ': ' + cannot); tell({ event: 'folder', error: cannot }); }
     process.on('message', (m) => { if (m && m.op === 'listen') page.listen(m.addresses); });
     // the service is gone: so is the page
     process.on('disconnect', () => { page.close(); process.exit(0); });
