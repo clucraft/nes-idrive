@@ -2,7 +2,7 @@
   "id": "clucraft_nes",
   "title": "NES",
   "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves. No sound",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "vendor": "clucraft",
   "loggingId": "OAA6",
   "maxDiskUsage": 104857600,
@@ -127,11 +127,6 @@
           "A"
         ]
       ]
-    },
-    {
-      "name": "ADD",
-      "kind": "canvas",
-      "title": "Add games"
     }
   ],
   "settings": [

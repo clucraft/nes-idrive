@@ -861,6 +861,14 @@ function writePack(file, files) {
         r = run();
         assert(r.status === 1 && /build:store/.test(r.stderr), 'no clear failure without the package: ' + r.status + ' ' + r.stderr);
     });
+    await check('app: one drawn screen, the game\'s, and every picture goes to it (the GPU renderer shows an app\'s first drawn screen only; a car\'s HMI took no picture for a second)', () => {
+        assert.deepStrictEqual(spec.screens.filter((s) => s.kind === 'canvas').map((s) => s.name), ['GAME']);
+        const main = fs.readFileSync(path.join(ROOT, 'app/main.js'), 'utf8');
+        const to = (main.match(/ui\.image\('[A-Z_]+'/g) || []).filter((v, i, all) => all.indexOf(v) === i);
+        assert.deepStrictEqual(to, ['ui.image(\'GAME_GFX\''], 'a picture for another screen');
+        assert(!/ui\.open\('(?!MAIN'|GAME')/.test(main), 'a screen opened that is neither the menu nor the game\'s');
+        assert(spec.screens[0].items.some((it) => it[1] === 'BTN_ADD'), '"Add games from a phone" is in the menu');
+    });
 
     console.log(failed ? failed + ' failed' : 'nes: all ok');
     process.exit(failed ? 1 : 0);

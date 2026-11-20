@@ -12,8 +12,10 @@
  * Screens:
  *   MAIN  the main menu, an HMI list: Continue, Restart, the games, every setting.
  *   GAME  the game on the whole screen ("chrome": false). BACK (the HMI's own) returns to the menu.
- *   ADD   "Add games from a phone": a QR code for the page the NES game loader opens on the car Wi-Fi
- *         (phone.js, qr.js; loader/ in the repository), and what came in.
+ *         "Add games from a phone" is on this screen too, in the game's place: a QR code for the page
+ *         the NES game loader opens on the car Wi-Fi (phone.js, qr.js; loader/ in the repository), and
+ *         what came in. The GPU renderer draws one screen of an app, and on a car a second drawn
+ *         screen stayed empty: the HMI took none of its pictures (INVALID_MODELID).
  *
  * Games are .nes files (library.js): two come with the app (app/games/); your own are in
  * <the app's data folder>/roms/ on the head unit (copied there, or sent from a phone), in a folder
@@ -84,6 +86,7 @@ mgu.run({
         let game = null;                 // the game in the console (a library entry)
         let err = null;                  // what went wrong, for the menu
         let starting = false, going = false;
+        let adding = false;              // the game's screen shows "Add games from a phone", and no game runs
         let frames = 0;                  // pictures of this game so far
         let keptSram = null, keptT = 0;
         const pic = { px: null, w: 0, h: 0 };
@@ -138,6 +141,7 @@ mgu.run({
                 }
                 lib.setLast(g);
                 log.info('nes: ' + g.file + (resumed ? ' (carrying on)' : ' (from power-on)') + ', ' + (nes.fps || 60).toFixed(2) + ' fps');
+                stopAdding();
                 await ui.open('GAME');
             } catch (e) {
                 err = 'The emulator did not start: ' + (e.message || e);
@@ -176,7 +180,9 @@ mgu.run({
         /** the game the console already holds goes back on screen as it is; any other is put in */
         const pick = (g) => {
             if (driving()) { menu(); return null; }
-            return g && game && nes.loaded && game.id === g.id ? ui.open('GAME') : play(g);
+            if (!(g && game && nes.loaded && game.id === g.id)) return play(g);
+            stopAdding();
+            return ui.open('GAME');
         };
         ui.onClick('BTN_PLAY', () => pick(game || lib.last()));
         ui.onClick('BTN_RESET', () => play(game || lib.last(), true));
@@ -207,7 +213,7 @@ mgu.run({
         const shown = () => ui.isVisible('GAME') && (!ui.hasFocus || ui.hasFocus('GAME'));
         let lastT = 0, acc = 0;
         function sync() {
-            const go = !!game && nes.loaded && shown() && !driving();
+            const go = !adding && !!game && nes.loaded && shown() && !driving();
             if (go !== going) {
                 // driving off with the game on screen: back to the menu, which says why it waits
                 if (!go && shown() && driving()) { log.info('car moving: game paused'); ui.open('MAIN'); }
@@ -285,6 +291,7 @@ mgu.run({
         }
         let sr = null;
         function render() {
+            if (adding) return addFrame();
             if (going) advance();
             const stop = err ? 'The game stopped' : !game ? 'No game: BACK for the menu' : !frames ? 'Loading...' : null;
             const cv = ctx.canvas(W, H);
@@ -325,13 +332,16 @@ mgu.run({
         ctx.loop('GAME', 60, render);
 
         /* ---------- games from a phone: the code to scan, and what came in ---------- */
-        const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log });
-        let drawn = null;                // what the ADD screen last showed
-        ui.onClick('BTN_ADD', () => ui.open('ADD'));
+        // On the game's screen, in the game's place (the top of this file says why): BTN_ADD opens GAME with
+        // `adding` set, and BACK, which hides GAME, ends it.
+        let addRec = null, pageKey = null;       // the page as it was last drawn, and what it was drawn from
+        const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onChange: () => { pageKey = null; } });
+        function stopAdding() { if (adding) { adding = false; pageKey = null; phone.close(); } }
+        ui.onClick('BTN_ADD', () => { adding = true; pageKey = null; return ui.open('GAME'); });
         ui.onVisible((name, on) => {
-            if (name !== 'ADD') return;
-            drawn = null;
-            if (!on) { phone.close(); lib.scan(); menu(); }
+            if (name !== 'GAME') return;
+            pageKey = null;
+            if (!on && adding) { stopAdding(); lib.scan(); menu(); }
         });
         /** a QR code as dark runs on white paper, as big as fits a square of `side` at x, y */
         function code(cv, text, x, y, side) {
@@ -347,52 +357,80 @@ mgu.run({
                 }
             }
         }
-        function addScreen() {
-            // the page is open while this screen is up and the car stands
-            const wait = driving();
-            if (wait) phone.close(); else phone.open();
-            const s = phone.state, page = s.page;
-            const now = JSON.stringify([wait, s]);
-            if (now === drawn) return null;
-            drawn = now;
-            const cv = ctx.canvas(W, H).clear(C.bg);
-            const lines = (list, x, y, size, colour, step) => list.forEach((t, i) => cv.text(t, x, y + i * (step || size + 14), size, colour, { literal: true }));
+        /**
+         * The page: what to scan, or why there is nothing to. Laid out W x H, and drawn on r k times as big
+         * with its top left corner at x0, y0.
+         */
+        function addPage(r, wait, s, x0, y0, k) {
+            const page = s.page;
+            const X = (x) => Math.round(x0 + x * k), Y = (y) => Math.round(y0 + y * k);
+            const text = (t, x, y, size, colour, opts) => r.text(t, X(x), Y(y), size * k, colour, opts);
+            const fits = (t, size, max) => fit(r, t, size * k, null, max * k);
+            const lines = (list, x, y, size, colour, step) => list.forEach((t, i) => text(t, x, y + i * (step || size + 14), size, colour, { literal: true }));
             if (wait) {
-                cv.text('Parked only', 80, 150, 44, C.text, { font: 'bold' });
+                text('Parked only', 80, 150, 44, C.text, { font: 'bold' });
                 lines(['The code to scan shows when the car stands.', 'Settings: Parked only.'], 80, 220, 30, C.dim);
             } else if (s.step === 'open' && page.url) {
-                code(cv, page.url, 60, 40, 440);
-                cv.text('Scan with your phone', 560, 86, 44, C.text, { font: 'bold' });
+                code(r, page.url, X(60), Y(40), Math.round(440 * k));
+                text('Scan with your phone', 560, 86, 44, C.text, { font: 'bold' });
                 lines(['1   The phone on the car\'s Wi-Fi (wireless CarPlay, or its hotspot)',
                     '2   Scan the code with the camera and pick your .nes files',
                     '3   BACK when you are done: the games are in the menu'], 560, 146, 28, C.dim, 44);
-                cv.text(fit(cv, page.url, 24, null, 900), 560, 290, 24, C.dim, { literal: true });
+                text(fits(page.url, 24, 900), 560, 290, 24, C.dim, { literal: true });
                 const recent = (page.saved || []).slice(-4);
                 recent.forEach((g, i) => {
-                    const y = 346 + i * 40, bad = !!g.refused;
-                    cv.fillRect(560, y - 20, 16, 16, bad ? C.bad : C.good);
-                    cv.text(fit(cv, bad ? g.name + ': ' + g.refused : g.name + (g.removed ? ' removed' : g.replaced ? ' replaced' : ' added'), 28, null, 880), 592, y, 28, bad ? C.bad : C.good, { literal: true });
+                    const y = 346 + i * 40, bad = !!g.refused, side = Math.round(16 * k);
+                    r.fillRect(X(560), Y(y - 20), side, side, bad ? C.bad : C.good);
+                    text(fits(bad ? g.name + ': ' + g.refused : g.name + (g.removed ? ' removed' : g.replaced ? ' replaced' : ' added'), 28, 880), 592, y, 28, bad ? C.bad : C.good, { literal: true });
                 });
-                if (!recent.length && /^failed/.test(page.firewall || '')) lines(['The head unit\'s firewall could not be opened:', fit(cv, page.firewall, 24, null, 900)], 560, 346, 24, C.bad);
+                if (!recent.length && /^failed/.test(page.firewall || '')) lines(['The head unit\'s firewall could not be opened:', fits(page.firewall, 24, 900)], 560, 346, 24, C.bad);
             } else if (s.step === 'open') {
-                cv.text('The car\'s Wi-Fi is off', 80, 150, 44, C.text, { font: 'bold' });
+                text('The car\'s Wi-Fi is off', 80, 150, 44, C.text, { font: 'bold' });
                 lines(['Switch on the car\'s hotspot, or connect the phone for wireless CarPlay.', 'The code to scan shows here then.'], 80, 220, 30, C.dim);
             } else if (s.step === 'missing') {
-                cv.text('This needs the NES game loader', 80, 130, 44, C.text, { font: 'bold' });
+                text('This needs the NES game loader', 80, 130, 44, C.text, { font: 'bold' });
                 lines(['Install "NES game loader" in the MGU Store, from the source this app came from,', 'and restart the head unit once.',
                     '', 'Without it: put your .nes files in a folder "nes" on a USB stick.'], 80, 200, 30, C.dim);
             } else if (s.step === 'refused') {
-                cv.text('Restart the head unit once', 80, 150, 44, C.text, { font: 'bold' });
+                text('Restart the head unit once', 80, 150, 44, C.text, { font: 'bold' });
                 lines(['The NES game loader was installed before this app and does not know it yet.', 'Settings in the MGU Store: Restart head unit.'], 80, 220, 30, C.dim);
             } else if (s.step === 'failed') {
-                cv.text('The page did not open', 80, 150, 44, C.text, { font: 'bold' });
-                lines([fit(cv, String(s.error || ''), 30, null, 1400)], 80, 220, 30, C.bad);
+                text('The page did not open', 80, 150, 44, C.text, { font: 'bold' });
+                lines([fits(String(s.error || ''), 30, 1400)], 80, 220, 30, C.bad);
             } else {
-                cv.text('Opening the page...', 80, 150, 44, C.text, { font: 'bold' });
+                text('Opening the page...', 80, 150, 44, C.text, { font: 'bold' });
             }
-            return ui.image('ADD_GFX', cv);
         }
-        ctx.loop('ADD', 2, addScreen);
+        /** a frame of the game's screen while it shows the page (render) */
+        function addFrame() {
+            // the page is open while this is on screen and the car stands
+            const wait = driving();
+            if (wait) phone.close(); else phone.open();
+            const cv = ctx.canvas(W, H), pl = cv.place, full = !!(pl && pl.full);
+            const key = [wait, full, pl ? pl.w + 'x' + pl.h + '@' + pl.scale : 'no renderer'].join(' ');
+            const fresh = key !== pageKey;
+            if (fresh) {
+                // drawn anew only when what it tells changed (phone.js says so: onChange), or where it goes
+                pageKey = key;
+                if (full) {
+                    // screen pixels, as the game's picture: the whole display but for the HMI's back arrow column
+                    addRec = new Recorder(pl.w, pl.h);
+                    const id7 = pl.w === HMI7.screen.w && pl.h === HMI7.screen.h;
+                    const left = id7 ? HMI7.left : 0, colEnd = id7 ? HMI7.colEnd : 0;
+                    addRec.fillRect(left, 0, pl.w - left, pl.h, C.bg);
+                    if (left) addRec.fillRect(0, colEnd, left, pl.h - colEnd, C.bg);
+                    const k = Math.min((pl.w - left - 40) / W, (pl.h - 40) / H);
+                    addPage(addRec, wait, phone.state, left + (pl.w - left - W * k) / 2, (pl.h - H * k) / 2, k);
+                } else {
+                    addRec = new Recorder(W, H, { textScale: pl ? pl.scale : 1 });
+                    addPage(addRec, wait, phone.state, 0, 0, 1);
+                }
+            }
+            // without the renderer the HMI keeps the picture it has; the renderer wants a frame every second at least
+            if (!pl && !fresh) return null;
+            if (full) cv.clear([0, 0, 0, 0]).xf(1, 0, 0).append(addRec).xf(); else cv.clear(C.bg).append(addRec);
+            return ui.image('GAME_GFX', cv);
+        }
         log.info('nes app started');
     },
 });
