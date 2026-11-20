@@ -26,7 +26,7 @@
  * for a while the service ends, until the app's next connection.
  *
  * A third thing an app cannot do: read a USB gamepad. The head unit's kernel has no driver for one, and its
- * USB devices are not an app's to open (pad.js). While a game runs the app may ask for one:
+ * USB devices are not an app's to open (pad.js). While its drawn screen shows (a game, or the list of them) the app may ask for one:
  *
  *   {"cmd":"pad"}              -> the same answer, with "pad":{"on":true,"name":"Controller" or null,"buttons":<bits>}
  *                                 and {"event":"pad","pad":{...}} to that connection whenever a pad is plugged in
@@ -49,13 +49,13 @@ const games = require('./games');
 const firewall = require('./nft');
 const pads = require('./pad');
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often
 const IDLE_MS = 2 * 60 * 1000;
 const KEPT = 30;                    // games named in the page's status
-const PAD_SCAN_MS = 2000;           // a gamepad plugged in while a game runs is found within this
+const PAD_SCAN_MS = 2000;           // a gamepad plugged in while the app asks is found within this
 const PAD_SHORT_MS = 3000;          // a gamepad's helper that ends sooner than this did not work...
 const PAD_TRIES = 5;                // ...and after this many in a row it is not started again for this game
 

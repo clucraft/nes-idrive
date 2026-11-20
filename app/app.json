@@ -1,8 +1,8 @@
 {
   "id": "clucraft_nes",
   "title": "NES",
-  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves. No sound",
-  "version": "0.4.2",
+  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. A short main menu; the list of games, Add games and the settings as tabs on one drawn screen, steered by the controller, a USB gamepad or four touch buttons; the game pixel for pixel on the whole screen; BACK returns to the menu and saves. No sound",
+  "version": "0.5.0",
   "vendor": "clucraft",
   "loggingId": "OAA6",
   "maxDiskUsage": 104857600,
@@ -17,7 +17,10 @@
   },
   "config": {
     "romDirs": [],
-    "usbRoots": ["/media", "/run/media"],
+    "usbRoots": [
+      "/media",
+      "/run/media"
+    ],
     "loaderSocket": "/run/clucraft-nes-loader.sock"
   },
   "screens": [
@@ -25,7 +28,6 @@
       "name": "MAIN",
       "kind": "menu",
       "title": "NES",
-      "settings": true,
       "items": [
         [
           "button",
@@ -34,73 +36,23 @@
         ],
         [
           "button",
-          "BTN_RESET",
-          "Restart"
-        ],
-        [
-          "text",
-          "MENU_INFO",
-          ""
-        ],
-        [
-          "button",
-          "BTN_ROM_0",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_1",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_2",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_3",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_4",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_5",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_6",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_7",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_8",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_9",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_MORE",
-          "More games"
+          "BTN_GAMES",
+          "Games"
         ],
         [
           "button",
           "BTN_ADD",
           "Add games from a phone"
+        ],
+        [
+          "button",
+          "BTN_SET",
+          "Settings"
+        ],
+        [
+          "text",
+          "MENU_INFO",
+          ""
         ]
       ]
     },

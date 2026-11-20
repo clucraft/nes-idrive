@@ -1,10 +1,10 @@
 {
   "id": "clucraft-nes-loader",
   "kind": "tool",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "GPL-2.0-or-later",
   "title": "NES game loader",
-  "description": "For the app NES: send your own .nes games from a phone. \"Add games from a phone\" in the app shows a QR code; the phone, on the same Wi-Fi as the car (the home Wi-Fi or phone hotspot the car has joined; or the car's own, with wireless CarPlay or its hotspot), opens a page and picks the files. The page's port is open in the head unit's firewall only while that screen is up, and on a Wi-Fi the car has joined only while the app's setting for it is on; the page runs as the NES app's own user and writes only into its games folder. Also reads a USB gamepad (an Xbox pad on a cable) for the app while a game runs, when the app's setting \"USB gamepad\" is on. Starts when the app asks, never at boot. Restart the head unit once after installing it.",
+  "description": "For the app NES: send your own .nes games from a phone. \"Add games from a phone\" in the app shows a QR code; the phone, on the same Wi-Fi as the car (the home Wi-Fi or phone hotspot the car has joined; or the car's own, with wireless CarPlay or its hotspot), opens a page and picks the files. The page's port is open in the head unit's firewall only while that screen is up, and on a Wi-Fi the car has joined only while the app's setting for it is on; the page runs as the NES app's own user and writes only into its games folder. Also reads a USB gamepad (an Xbox pad on a cable) for the app while a game or its list of games shows, when the app's setting \"USB gamepad\" is on. Starts when the app asks, never at boot. Restart the head unit once after installing it.",
   "requires": {
     "mgu-deploy": "0.7.0"
   },

@@ -10,12 +10,18 @@
  * sound yet: nothing on the head unit takes an app's samples.
  *
  * Screens:
- *   MAIN  the main menu, an HMI list: Continue, Restart, the games, every setting.
- *   GAME  the game on the whole screen ("chrome": false). BACK (the HMI's own) returns to the menu.
- *         "Add games from a phone" is on this screen too, in the game's place: a QR code for the page
- *         the NES game loader opens on the car Wi-Fi (phone.js, qr.js; loader/ in the repository), and
- *         what came in. The GPU renderer draws one screen of an app, and on a car a second drawn
- *         screen stayed empty: the HMI took none of its pictures (INVALID_MODELID).
+ *   MAIN  the main menu, an HMI list of four: Continue, Games, Add games from a phone, Settings. The last
+ *         opens the HMI's own screen of the settings (SETTINGS, the kit's): a finger works on its rows,
+ *         so they can be reached whatever steers the drawn screen.
+ *   GAME  the one drawn screen ("chrome": false). It shows the game on the whole screen, or, while no
+ *         game is on it, three pages under a row of tabs (tabs.js): Games, the list to pick from; Add
+ *         games, a QR code for the page the NES game loader opens on the car Wi-Fi (phone.js, qr.js;
+ *         loader/ in the repository), and what came in; Settings. BACK (the HMI's own) returns to the
+ *         menu. All of it is on this one screen because the GPU renderer draws one screen of an app, and
+ *         on a car a second drawn screen stayed empty: the HMI took none of its pictures
+ *         (INVALID_MODELID). The tabs are steered by the controller, a USB gamepad, and the four
+ *         buttons on the touchscreen: a finger on the page itself does not reach an app that draws
+ *         pixel pictures (kit renderd.js: claim).
  *
  * Games are .nes files (library.js): two come with the app (app/games/); your own are in
  * <the app's data folder>/roms/ on the head unit (copied there, or sent from a phone), in a folder
@@ -23,7 +29,8 @@
  *
  * Controls (controls.js): push the controller for the D-pad, press it for A, turn it right for B and
  * left for Start; Select, Start, B and A are also buttons on the touchscreen, beside the picture. With
- * the setting "USB gamepad", an Xbox pad on a cable plays too (pad.js; the NES game loader reads it).
+ * the setting "USB gamepad", an Xbox pad on a cable plays too (pad.js; the NES game loader reads it); its
+ * LB and RB together leave the game for the list of games.
  *
  * The game runs only while GAME is on screen - and, with "Parked only" (the default), while the car
  * stands. Whenever it stops (BACK, MENU, a popup or call, driving off, the app closing) the console's
@@ -38,14 +45,16 @@ const { Nes } = require('./nes-core');
 const { Controls } = require('./controls');
 const { Library, mkdirp, usbFolders } = require('./library');
 const { Phone } = require('./phone');
-const { Pad } = require('./pad');
+const { Pad, PAD } = require('./pad');
+const { Tabs } = require('./tabs');
 const { qr } = require('./qr');
 
 const W = 1600, H = 520, IMG = 1;
-const SLOTS = 10;                                   // game buttons in the menu (app.json BTN_ROM_0..9), a page of them
 const BAR = ['BTN_SELECT', 'BTN_START', 'BTN_B', 'BTN_A'];
 const MAX_STEP = 6;                                 // frames run at once at most, to catch up
 const KEEP_MS = 30000;                              // while playing: battery memory and state saved this often
+const HELD_MS = 400, AGAIN_MS = 90;                 // a gamepad's D-pad held on the tabs: it moves on after, and then every
+const BAR_TABS = { BTN_SELECT: 'Tab', BTN_START: 'Up', BTN_B: 'Down', BTN_A: 'OK' };   // the touch buttons while the tabs show
 const NAMES = { a: 'A', b: 'B', start: 'Start', select: 'Select' };
 const C = { bg: '#000000', text: '#e8eaed', dim: '#8c939c', key: '#ffffff', btn: '#1a1e24', edge: '#4a525c', lit: '#c8102e', good: '#7ddc8a', bad: '#ff8f8f', paper: '#ffffff', ink: '#000000' };
 /** milliseconds on a monotonic clock (the wall clock can jump: GPS / network time sync) */
@@ -78,7 +87,10 @@ mgu.run({
             packs: [path.join(__dirname, 'games.pack'), path.join(__dirname, 'roms.pack')],
             dirs: [romDir].concat(config.romDirs || []), more: usb, dataDir: ctx.dataDir, log,
         });
-        lib.scan();
+        // (libRev counts up when the games found are others than before: the drawn list follows it)
+        let libRev = 0, libKey = '';
+        const scan = () => { lib.scan(); const k = lib.games.map((g) => g.id).join('/'); if (k !== libKey) { libKey = k; libRev++; } };
+        scan();
         log.info('nes: ' + lib.games.length + ' game(s); more go on a USB stick (folder "nes") or into ' + romDir);
 
         /* ---------- the console ---------- */
@@ -86,13 +98,13 @@ mgu.run({
         let game = null;                 // the game in the console (a library entry)
         let err = null;                  // what went wrong, for the menu
         let starting = false, going = false;
-        let adding = false;              // the game's screen shows "Add games from a phone", and no game runs
+        let view = 'games';              // what the game's screen shows: 'play' (the game), or a page of the tabs: 'games', 'add', 'settings'
         let frames = 0;                  // pictures of this game so far
         let keptSram = null, keptT = 0;
         const pic = { px: null, w: 0, h: 0 };
         // compiled in the background from the start (a few seconds on the head unit): ready by the time a game is picked
         nes.compile().catch((e) => { err = 'The emulator did not start: ' + (e.message || e); log.error('nes: compile', e); menu(); });
-        nes.onDead = () => { err = (game ? game.title : 'The game') + ' stopped: the emulator crashed'; game = null; frames = 0; menu(); ui.open('MAIN'); };
+        nes.onDead = () => { err = (game ? game.title : 'The game') + ' stopped: the emulator crashed'; game = null; frames = 0; if (view === 'play') show('games'); menu(); };
 
         function applyOptions() {
             const crop = settings.get('edges') === 'full' ? 0 : 8;
@@ -141,8 +153,8 @@ mgu.run({
                 }
                 lib.setLast(g);
                 log.info('nes: ' + g.file + (resumed ? ' (carrying on)' : ' (from power-on)') + ', ' + (nes.fps || 60).toFixed(2) + ' fps');
-                stopAdding();
-                await ui.open('GAME');
+                show('play');
+                if (!ui.isVisible('GAME')) await ui.open('GAME');
             } catch (e) {
                 err = 'The emulator did not start: ' + (e.message || e);
                 log.error('nes: play', e);
@@ -150,13 +162,11 @@ mgu.run({
         }
 
         /* ---------- main menu ---------- */
-        let page = 0;
-        const pages = () => Math.max(1, Math.ceil(lib.games.length / SLOTS));
         // a row's text and whether it shows go to the HMI only when they change (and all of them again
         // each time the menu comes on screen)
         const sent = new Map();
         const put = (name, text) => { if (sent.get('t' + name) !== text) { sent.set('t' + name, text); ui.text(name, text); } };
-        const show = (name, on) => { if (sent.get('v' + name) !== on) { sent.set('v' + name, on); ui.visible(name, on); } };
+        const shownRow = (name, on) => { if (sent.get('v' + name) !== on) { sent.set('v' + name, on); ui.visible(name, on); } };
         ui.onVisible((name, on) => { if (name === 'MAIN' && on) { sent.clear(); menu(); } });
         function menu() {
             const cur = game || lib.last();
@@ -166,35 +176,43 @@ mgu.run({
             else if (!lib.games.length) info = 'No games: put .nes files in a folder "nes" on a USB stick, or copy them to ' + romDir;
             else info = lib.games.length + (lib.games.length === 1 ? ' game' : ' games') + '. In a game, BACK returns here and saves';
             put('BTN_PLAY', cur ? 'Continue: ' + cur.title : 'Continue');
-            put('BTN_RESET', cur ? 'Restart: ' + cur.title : 'Restart');
+            shownRow('BTN_PLAY', !!cur);
+            put('BTN_GAMES', 'Games (' + lib.games.length + ')');
             put('MENU_INFO', info);
-            if (page >= pages()) page = 0;
-            for (let i = 0; i < SLOTS; i++) {
-                const g = lib.games[page * SLOTS + i];
-                put('BTN_ROM_' + i, g ? g.title : '-');
-                show('BTN_ROM_' + i, !!g);
-            }
-            put('BTN_MORE', 'More games (' + (page + 1) + ' of ' + pages() + ')');
-            show('BTN_MORE', pages() > 1);
         }
+        /** what the game's screen shows from now on: the game ('play'), or a page of the tabs */
+        function show(v) {
+            if (v === view) return;
+            // (games sent from a phone are in the list once the page is left)
+            if (view === 'add') { phone.close(); scan(); }
+            view = v;
+            pageKey = null;
+            if (v !== 'play' && tabs.name !== v) tabs.open(v);
+            sync();
+        }
+        /** a page of the tabs, from the menu */
+        const page = (v) => { show(v); tabs.open(v); return ui.isVisible('GAME') ? null : ui.open('GAME'); };
         /** the game the console already holds goes back on screen as it is; any other is put in */
         const pick = (g) => {
             if (driving()) { menu(); return null; }
             if (!(g && game && nes.loaded && game.id === g.id)) return play(g);
-            stopAdding();
-            return ui.open('GAME');
+            show('play');
+            return ui.isVisible('GAME') ? null : ui.open('GAME');
         };
         ui.onClick('BTN_PLAY', () => pick(game || lib.last()));
-        ui.onClick('BTN_RESET', () => play(game || lib.last(), true));
-        for (let i = 0; i < SLOTS; i++) ui.onClick('BTN_ROM_' + i, () => pick(lib.games[page * SLOTS + i]));
-        ui.onClick('BTN_MORE', () => { page = (page + 1) % pages(); menu(); });
+        ui.onClick('BTN_GAMES', () => page('games'));
+        ui.onClick('BTN_ADD', () => page('add'));
+        // (the HMI's own screen of them: the drawn one is the tab "Settings")
+        ui.onClick('BTN_SET', () => ui.open('SETTINGS'));
         menu();
         // (games copied over while the app runs show up; the texts follow the car standing or driving)
-        setInterval(() => { if (ui.isVisible('MAIN') && !starting) { if (!going) lib.scan(); menu(); } }, 3000);
+        setInterval(() => { if ((ui.isVisible('MAIN') || (ui.isVisible('GAME') && view === 'games')) && !starting) { if (!going) scan(); menu(); } }, 3000);
 
         /* ---------- controls ---------- */
+        // (while the tabs show, the same controller and touch buttons steer those: nav)
         const ctl = new Controls({
             log, press: () => settings.get('press'), turnR: () => settings.get('turnR'), turnL: () => settings.get('turnL'),
+            nav: (ev) => { if (view !== 'play') tabs.input(ev); },
         });
         // the controller events the HMI didn't get while the game holds the controller (the renderer
         // hands them on from mgu-inputgate.so in the HMI)
@@ -207,25 +225,49 @@ mgu.run({
         }, log).then((s) => log.info('controller ' + (s.error ? 'error: ' + s.error : 'subscribed')));
         BAR.forEach((b) => ui.onClick(b, () => { if (settings.get('touch') !== false) ctl.bar(b); }));
         // a USB gamepad (setting "USB gamepad"): the NES game loader reads it while a game runs (pad.js)
-        const pad = new Pad({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onMask: (m) => ctl.setExternal(m) });
+        // On the tabs its D-pad moves as the controller's pushes do, A chooses, LB and RB go to the tab to the
+        // left and right. In a game, LB and RB together leave it for the list of games.
+        let padWas = 0, again = null;            // the pad's buttons before; a direction held: { ev, bit, at: when it moves on }
+        const padSteer = (b) => {
+            const down = b & ~padWas;
+            padWas = b;
+            if (view === 'play') {
+                if ((b & PAD.L) && (b & PAD.R) && (down & (PAD.L | PAD.R))) show('games');
+                return;
+            }
+            if (down & PAD.L) tabs.input({ tab: -1 });
+            if (down & PAD.R) tabs.input({ tab: 1 });
+            [[PAD.UP, 'N'], [PAD.DOWN, 'S'], [PAD.LEFT, 'W'], [PAD.RIGHT, 'E']].forEach((d) => {
+                if (!(down & d[0])) return;
+                tabs.input({ push: d[1] });
+                again = d[1] === 'N' || d[1] === 'S' ? { ev: { push: d[1] }, bit: d[0], at: Date.now() + HELD_MS } : null;
+            });
+            if (again && !(b & again.bit)) again = null;
+            if (down & (PAD.A | PAD.START)) tabs.input({ press: true });
+        };
+        const pad = new Pad({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onMask: (m) => ctl.setExternal(m), onButtons: padSteer });
 
         /* ---------- run while the game screen is up; save when it stops ---------- */
         const shown = () => ui.isVisible('GAME') && (!ui.hasFocus || ui.hasFocus('GAME'));
         let lastT = 0, acc = 0;
+        let held = null;
         function sync() {
-            const go = !adding && !!game && nes.loaded && shown() && !driving();
+            const up = shown();
+            const go = view === 'play' && !!game && nes.loaded && up && !driving();
             if (go !== going) {
-                // driving off with the game on screen: back to the menu, which says why it waits
-                if (!go && shown() && driving()) { log.info('car moving: game paused'); ui.open('MAIN'); }
                 going = go;
-                // the controller to the game alone while it runs (the HMI's pull-down / back on a
-                // push stay away); BACK and MENU still work. Needs mgu-inputgate.so (deploy-car.sh)
-                if (ctx.controller) ctx.controller.grab(go);
                 ctl.enable(go);
                 if (go) { lastT = 0; acc = 0; keptT = Date.now(); } else { keep(true); menu(); }
+                // driving off with the game on screen: the list of games, which says why it waits
+                if (!go && view === 'play' && up && driving()) { log.info('car moving: game paused'); show('games'); }
             }
+            // the controller to this screen alone while it shows, the game or the tabs (the HMI's pull-down /
+            // back on a push stay away); BACK and MENU still work. Needs mgu-inputgate.so (deploy-car.sh)
+            if (up !== held) { held = up; if (ctx.controller) ctx.controller.grab(up); }
+            ctl.navigate(up && view !== 'play');
             if (going) { applyOptions(); if (Date.now() - keptT > KEEP_MS) keep(true); }
-            if (going && settings.get('pad') === true) pad.start(); else pad.stop();
+            // a gamepad is read while the screen shows: it steers the tabs too
+            if (up && settings.get('pad') === true) pad.start(); else { pad.stop(); padWas = 0; again = null; }
         }
         setInterval(sync, 200);
         if (ui.onFocus) ui.onFocus(() => sync());
@@ -274,7 +316,7 @@ mgu.run({
             r.text(fit(r, game.title, 46, 'bold', w), x, 92, 46, C.text, { font: 'bold', literal: true });
             const rows = [['Push', 'D-pad'], ['Press', NAMES[settings.get('press')] || 'A'],
                 ['Turn right', NAMES[settings.get('turnR')] || null], ['Turn left', NAMES[settings.get('turnL')] || null],
-                ['BACK', 'Menu (the game is saved)']].filter((q) => q[1]);
+                ['BACK', 'Menu (the game is saved)'], ['LB + RB', pad.name ? 'The list of games' : null]].filter((q) => q[1]);
             rows.forEach((q, i) => {
                 const y = 176 + i * 54;
                 r.text(q[0], x, y, 30, C.key, { font: 'bold' });
@@ -291,7 +333,7 @@ mgu.run({
         }
         let sr = null;
         function render() {
-            if (adding) return addFrame();
+            if (view !== 'play') return tabsFrame();
             if (going) advance();
             const stop = err ? 'The game stopped' : !game ? 'No game: BACK for the menu' : !frames ? 'Loading...' : null;
             const cv = ctx.canvas(W, H);
@@ -331,20 +373,26 @@ mgu.run({
         }
         ctx.loop('GAME', 60, render);
 
-        /* ---------- games from a phone: the code to scan, and what came in ---------- */
-        // On the game's screen, in the game's place (the top of this file says why): BTN_ADD opens GAME with
-        // `adding` set, and BACK, which hides GAME, ends it.
-        let addRec = null, pageKey = null;       // the page as it was last drawn, and what it was drawn from
+        /* ---------- the tabs: the games, games from a phone, the settings ---------- */
+        // On the game's screen, in the game's place (the top of this file says why). The page for a phone is
+        // open while its tab shows and the car stands; BACK, which hides GAME, closes it.
+        let addRec = null, pageKey = null;       // the tabs as they were last drawn, and what they were drawn from
         // (setting "Add games over the Wi-Fi the car is on", on at first: the page on a Wi-Fi the head unit has joined too)
         const joinedWifi = () => settings.get('joinedWifi') !== false;
         const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, joined: joinedWifi, onChange: () => { pageKey = null; } });
-        function stopAdding() { if (adding) { adding = false; pageKey = null; phone.close(); } }
-        ui.onClick('BTN_ADD', () => { adding = true; pageKey = null; return ui.open('GAME'); });
+        const tabs = new Tabs({
+            games: () => lib.games, current: () => game || lib.last(), settings,
+            onPlay: (g, fresh) => (fresh ? play(g, true) : pick(g)),
+            onTab: (name) => show(name),
+            // (the page of a phone's code is laid out 1600 x 520: as much smaller as the tabs leave it room)
+            drawAdd: (r, x, y, k, h) => { const s = Math.min(1, h / H); addPage(r, driving(), phone.state, x + 40 * k * (1 - s), y, k * s); },
+        });
         ui.onVisible((name, on) => {
             if (name !== 'GAME') return;
             pageKey = null;
-            if (!on && adding) { stopAdding(); lib.scan(); menu(); }
+            if (!on) { phone.close(); if (view === 'add') scan(); menu(); }
         });
+        settings.onChange(() => { pageKey = null; });
         /** a QR code as dark runs on white paper, as big as fits a square of `side` at x, y */
         function code(cv, text, x, y, side) {
             const q = qr(text), k = Math.max(1, Math.floor(side / (q.size + 8))), at = Math.round((side - q.size * k) / 2);
@@ -380,7 +428,7 @@ mgu.run({
                 lines([joined ? '1   The phone on the same Wi-Fi as the car (your home Wi-Fi, or the phone\'s own hotspot)'
                     : '1   The phone on the car\'s Wi-Fi (wireless CarPlay, or its hotspot)',
                     '2   Scan the code with the camera and pick your .nes files',
-                    '3   BACK when you are done: the games are in the menu'], 560, 146, 28, C.dim, 44);
+                    '3   The games you send are in the tab "Games"'], 560, 146, 28, C.dim, 44);
                 text(fits(page.url, 24, 900), 560, 290, 24, C.dim, { literal: true });
                 const recent = (page.saved || []).slice(-4);
                 recent.forEach((g, i) => {
@@ -391,7 +439,7 @@ mgu.run({
                 if (!recent.length && /^failed/.test(page.firewall || '')) lines(['The head unit\'s firewall could not be opened:', fits(page.firewall, 24, 900)], 560, 346, 24, C.bad);
                 // the car's own Wi-Fi is up as well: a phone on wireless CarPlay is on that one, and this code is not for it
                 else if (!recent.length && joined && nets.some((n) => n.kind === 'car')) {
-                    lines(['A phone on wireless CarPlay is on the car\'s own Wi-Fi instead. For that, switch off', '"Add games over the Wi-Fi the car is on" in the menu.'], 560, 346, 24, C.dim);
+                    lines(['A phone on wireless CarPlay is on the car\'s own Wi-Fi instead. For that, switch off', '"Add games over the Wi-Fi the car is on" in the tab "Settings".'], 560, 346, 24, C.dim);
                 }
             } else if (s.step === 'open' && joinedWifi()) {
                 text('No Wi-Fi to send over', 80, 150, 44, C.text, { font: 'bold' });
@@ -413,29 +461,55 @@ mgu.run({
                 text('Opening the page...', 80, 150, 44, C.text, { font: 'bold' });
             }
         }
-        /** a frame of the game's screen while it shows the page (render) */
-        function addFrame() {
-            // the page is open while this is on screen and the car stands
+        /** the touch buttons under the tabs (the HMI's own, hidden: as beside the game), and what else steers them */
+        function strip(r, btns) {
+            const top = HMI7.barTop + 10, bh = r.h - top - 10;
+            let end = HMI7.btn.x;
+            btns.forEach((b) => {
+                const bx = b.x + 6, bw = b.w - 12;
+                r.roundRect(bx, top, bw, bh, 16, ctl.lit(b.id) > 0 ? C.lit : C.btn);
+                r.strokeRoundRect(bx, top, bw, bh, 16, 2, C.edge);
+                r.text(String(BAR_TABS[b.id] || b.label).toUpperCase(), bx + bw / 2, top + bh / 2 + 15, 40, C.text, { align: 'center', font: 'bold' });
+                end = b.x + b.w;
+            });
+            if (r.w - end < 560) return;
+            r.text('Controller: turn or push to move, press to choose', end + 36, top + 38, 24, C.dim);
+            r.text(pad.name ? 'Gamepad: D-pad and A; LB and RB for the tabs' : 'BACK: the menu', end + 36, top + 78, 24, C.dim);
+        }
+        /** a frame of the game's screen while it shows the tabs (render) */
+        function tabsFrame() {
+            const now = Date.now();
+            // a direction held on the gamepad moves on
+            if (again && now >= again.at && (padWas & again.bit)) { tabs.input(again.ev); again.at = now + AGAIN_MS; }
+            // the page for a phone is open while its tab is on screen and the car stands
             const wait = driving();
-            if (wait) phone.close(); else phone.open();
+            if (view === 'add' && !wait) phone.open(); else phone.close();
             const cv = ctx.canvas(W, H), pl = cv.place, full = !!(pl && pl.full);
-            const key = [wait, full, pl ? pl.w + 'x' + pl.h + '@' + pl.scale : 'no renderer'].join(' ');
+            const id7 = full && pl.w === HMI7.screen.w && pl.h === HMI7.screen.h;
+            const btns = id7 && settings.get('touch') !== false ? ctx.display.buttons() : [];
+            const notice = err || (wait ? 'Parked only: the games wait while the car moves' : null);
+            const cur = game || lib.last();
+            const key = [tabs.rev, view, notice, libRev, cur ? cur.id : '', btns.map((b) => (ctl.lit(b.id) > 0 ? 1 : 0)).join(''), pad.name,
+                full, pl ? pl.w + 'x' + pl.h + '@' + pl.scale : 'no renderer'].join('|');
             const fresh = key !== pageKey;
             if (fresh) {
-                // drawn anew only when what it tells changed (phone.js says so: onChange), or where it goes
+                // drawn anew only when what it shows changed (tabs.rev; phone.js and the settings say so too), or where it goes
                 pageKey = key;
+                const info = { notice, bad: !!err };
                 if (full) {
                     // screen pixels, as the game's picture: the whole display but for the HMI's back arrow column
                     addRec = new Recorder(pl.w, pl.h);
-                    const id7 = pl.w === HMI7.screen.w && pl.h === HMI7.screen.h;
                     const left = id7 ? HMI7.left : 0, colEnd = id7 ? HMI7.colEnd : 0;
                     addRec.fillRect(left, 0, pl.w - left, pl.h, C.bg);
                     if (left) addRec.fillRect(0, colEnd, left, pl.h - colEnd, C.bg);
-                    const k = Math.min((pl.w - left - 40) / W, (pl.h - 40) / H);
-                    addPage(addRec, wait, phone.state, left + (pl.w - left - W * k) / 2, (pl.h - H * k) / 2, k);
+                    // the page ends over the touch buttons, where there are any
+                    const bottom = btns.length ? HMI7.barTop - 8 : pl.h - 20;
+                    const k = Math.min((pl.w - left - 40) / W, (bottom - 20) / H);
+                    tabs.draw(addRec, left + (pl.w - left - W * k) / 2, 20, k, (bottom - 20) / k, info);
+                    if (btns.length) strip(addRec, btns);
                 } else {
                     addRec = new Recorder(W, H, { textScale: pl ? pl.scale : 1 });
-                    addPage(addRec, wait, phone.state, 0, 0, 1);
+                    tabs.draw(addRec, 0, 0, 1, H, info);
                 }
             }
             // without the renderer the HMI keeps the picture it has; the renderer wants a frame every second at least

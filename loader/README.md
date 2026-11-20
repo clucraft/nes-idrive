@@ -23,7 +23,7 @@ The page can also take a game out again. It works while the screen with the code
 |---|---|---|
 | `service.js` | root | answers the NES app on `/run/clucraft-nes-loader.sock`; puts the page's port into the firewall and takes it out; starts the page; starts `nes-usbpipe` and tells the app the gamepad's buttons |
 | `page.js` | the NES app's own user | listens on the car Wi-Fi; checks and writes the games |
-| `nes-usbpipe` | the NES app's own user, in the group of the head unit's USB devices | passes a gamepad's USB packets on, while a game runs |
+| `nes-usbpipe` | the NES app's own user, in the group of the head unit's USB devices | passes a gamepad's USB packets on, while the app's drawn screen shows |
 
 - **Started by the app, never at boot.** systemd starts the service when the NES app connects to the socket. Two minutes after the app is gone it ends. Nothing of it runs while the app's screen was never opened.
 - **Only the NES app can ask.** The socket belongs to the NES app's own group (`sockgroup.js`), not to the group every app is in.
@@ -38,11 +38,11 @@ The page can also take a game out again. It works while the screen with the code
 
 The head unit's kernel has no driver for a gamepad: no HID, no input events, no joystick driver. A pad plugged into the car's USB port is listed on the bus and nothing more, and an app may not open USB devices. So, with the app's setting **USB gamepad** on (it is off at first):
 
-1. While a game runs, the app asks the loader for a pad (`{"cmd":"pad"}` on the same socket).
+1. While its drawn screen shows, a game or the list of games (the app from 0.5.0; before, a game alone), the app asks the loader for a pad (`{"cmd":"pad"}` on the same socket).
 2. The loader looks for one on the USB bus every two seconds: an interface of class `ff`, subclass `47`, protocol `d0`, which is an Xbox One or Xbox Series pad on a cable, or another make's pad for that console.
 3. It starts `nes-usbpipe` on it. That program knows nothing about gamepads: it passes the packets of one USB interface on as lines of text, in both directions, through the kernel's usbfs.
 4. `pad.js` sends the packets that switch the pad on, reads its reports, and the loader tells the app the buttons whenever they change. The packets and the report's layout are those of the Linux kernel's own driver (`drivers/input/joystick/xpad.c`).
-5. When the game stops, the app leaves, or the pad is pulled out, `nes-usbpipe` ends. Nothing reads the USB bus while no game runs.
+5. When that screen is left, the app leaves, or the pad is pulled out, `nes-usbpipe` ends. Nothing reads the USB bus while the app shows the head unit's own menus, or nothing.
 
 - **Not root.** `nes-usbpipe` runs as the NES app's user, in the group the head unit gives its USB device files to. It opens the one device the loader names and unbinds no driver.
 - **No port, no firewall rule.** The buttons go over the socket only the NES app can reach.

@@ -23,16 +23,17 @@
   ![Snake, one of the two games that come with the app, in the emulator](docs/emulator-snake.png)
 
 - Your own `.nes` files (iNES format) get to the app in four ways:
-  - **From a phone.** *Add games from a phone* in the menu shows a QR code. The phone, on the same Wi-Fi as the car, opens the page behind it and you pick the files. That Wi-Fi is the one the car has joined (your home Wi-Fi, the phone's own hotspot) while the setting *Add games over the Wi-Fi the car is on* is on, as it is at first; switched off, or with the car on no Wi-Fi, it is the car's own (wireless CarPlay, the car's hotspot). This needs the [NES game loader](loader), a small optional service installed beside the app. *On one car (2026-11-20, the app 0.4.2 and the loader 0.2.2) a phone on the car's home Wi-Fi opened that page, and the game it sent was answered with "the car could not save it (EACCES)". The loader 0.2.3 saves a game in a copy of that car's folders on a PC; it has not been on a car yet.*
+  - **From a phone.** *Add games from a phone* in the menu, the tab *Add games* of the games screen, shows a QR code. The phone, on the same Wi-Fi as the car, opens the page behind it and you pick the files. That Wi-Fi is the one the car has joined (your home Wi-Fi, the phone's own hotspot) while the setting *Add games over the Wi-Fi the car is on* is on, as it is at first; switched off, or with the car on no Wi-Fi, it is the car's own (wireless CarPlay, the car's hotspot). This needs the [NES game loader](loader), a small optional service installed beside the app. *On one car (2026-11-20, the app 0.4.2 and the loader 0.2.2) a phone on the car's home Wi-Fi opened that page, and the game it sent was answered with "the car could not save it (EACCES)". The loader 0.2.3 saves a game in a copy of that car's folders on a PC; it has not been on a car yet.*
 
-    ![The Add games screen: a QR code, the three steps, and what came in](docs/add-games-car.png)
+    ![The Add games page as it was before the tabs, on the whole screen: a QR code, the three steps, and what came in](docs/add-games-car.png)
 
     <img src="docs/add-games-phone.png" alt="The page on the phone: Choose games, what was sent, and the games in the car" width="300">
 
-  - **A USB stick,** in a folder named `nes` at its top. Plug it in and the games are in the menu within a few seconds, for as long as the stick stays in. They are played from the stick, not copied. *Not tried on a car yet:* whether the head unit lets an app read a stick is one of the things the first test shows.
-  - **`roms/` in the app's data folder on the head unit** (`/var/opt/public/oap/oap_<uid>/data/roms/`; the app's log names the folder at each start). Files copied there over SSH show up in the menu within a few seconds, without a rebuild.
+  - **A USB stick,** in a folder named `nes` at its top. Plug it in and the games are in the list within a few seconds, for as long as the stick stays in. They are played from the stick, not copied. *Not tried on a car yet:* whether the head unit lets an app read a stick is one of the things the first test shows.
+  - **`roms/` in the app's data folder on the head unit** (`/var/opt/public/oap/oap_<uid>/data/roms/`; the app's log names the folder at each start). Files copied there over SSH show up in the list within a few seconds, without a rebuild.
   - **`app/roms/` on your PC.** The build for the kit's installer packs the folder into the app, so the games install with it. Git ignores them, and the package the MGU Store installs never has them.
-- **The main menu** is one of the head unit's own lists: *Continue*, *Restart*, the games by name (ten to a page, *More games* for the next), *Add games from a phone*, and every setting.
+- **The main menu** is one of the head unit's own lists, four rows long: *Continue*, *Games*, *Add games from a phone* and *Settings*.
+- **The games screen** is the app's own drawing, three pages under a row of tabs: *Games*, every game by name with the one played last on top; *Add games*; and *Settings*. [The games screen](#the-games-screen) says how it is steered. *New in 0.5.0, and not on a car yet.*
 - **FCEUmm's compatibility:** the complete libretro core is built in, with all its cartridge mappers. One player; no light gun or other accessories.
 
 ### Controls
@@ -48,21 +49,39 @@
 
 - **Press and the two turn directions** can be given other buttons in the settings.
 - **The touch buttons** are the head unit's own bar buttons, which stay under the picture. The app draws them where the head unit has them and moves the picture to the right to make room. With *Touch buttons beside the picture* off, the picture sits in the middle.
-- **While a game runs it has the controller to itself,** through the controller gate the kit's installer sets up. BACK, MENU and the touchscreen always work.
+- **While a game or the games screen shows, the app has the controller to itself,** through the controller gate the kit's installer sets up. BACK, MENU and the touchscreen always work.
 - **The controller is not a gamepad:** one direction at a time, one held button, taps for the rest. That is fine for menus, puzzle and turn-based games, and hard for platformers. A [USB gamepad](#a-usb-gamepad) is the way round it.
+
+### The games screen
+
+*Games* in the menu opens it. What steers a game steers it too:
+
+| | |
+|---|---|
+| Turn the controller | along the tabs, or through the rows of a page |
+| Push it up / down | a row up or down; up from the first row to the tabs, down from the tabs into the page |
+| Push it right / left | another tab; on a game, *Start over* and back; a setting's next or previous value |
+| Press it | plays the game, switches the setting or takes its next value |
+| TAB, UP, DOWN, OK on the touchscreen | the next tab, a row up, a row down, the press |
+| A gamepad's D-pad, A, LB and RB | the pushes, the press, the tab to the left and to the right |
+| BACK | the main menu |
+
+- **A game in focus** has two buttons: *Play* (*Continue* for the one played last), and *Start over* beside it, which plays it from power-on.
+- **A finger on a row does nothing.** The head unit's renderer hands an app that draws pixel pictures, as a game is, no touches but those on the head unit's own buttons: the four under the page. The menu's *Settings* is the head unit's own screen of the same settings, where a finger works on every row.
+- **Why drawn:** the head unit's own lists have a fixed number of rows (the menu had ten games to a page), no tabs, and nothing a gamepad can steer.
 
 ### A USB gamepad
 
-An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, plays as a gamepad does: its D-pad and left stick are the D-pad, A and B are A, X and Y are B, Menu is Start and View is Select. The iDrive controller and the touch buttons keep working beside it.
+An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, plays as a gamepad does: its D-pad and left stick are the D-pad, A and B are A, X and Y are B, Menu is Start and View is Select. The iDrive controller and the touch buttons keep working beside it. It steers [the games screen](#the-games-screen) as well, and in a game LB and RB together go back to the list of games.
 
-- **It needs the [NES game loader](loader) and the setting *USB gamepad*,** which is off at first. The head unit's kernel has no gamepad driver of any kind, so a small program of the loader's reads the pad's USB packets, while a game runs and only then.
+- **It needs the [NES game loader](loader) and the setting *USB gamepad*,** which is off at first. The head unit's kernel has no gamepad driver of any kind, so a small program of the loader's reads the pad's USB packets, while a game or the games screen shows and only then.
 - **Other pads:** another make's pad for the Xbox One is read the same way when it speaks that console's protocol. An Xbox 360 pad, a PlayStation pad and a plain USB pad are not read yet, and neither is a wireless pad's USB dongle.
 - **Tried on one car:** an Xbox One S pad works there (2026-11-19). On a PC the same pad was read first, every button and the left stick, and played *Pad Test* in the emulator through the loader. [`loader/README.md`](loader/README.md) says what has run and what has not.
 
 ### Saves
 
 - **Leaving the game saves it:** BACK, MENU, a popup or call, driving off, the app closing. It is also saved every 30 seconds while you play.
-- ***Continue*** and picking the game again carry on from there. ***Restart*** starts the game from power-on.
+- ***Continue*** and picking the game again carry on from there. ***Start over***, beside the game in the list, starts it from power-on.
 - **A cartridge's battery memory** (the game's own save) is kept separately and survives a restart.
 - Both are in `saves/` in the app's data folder, so they survive reinstalling the app, but not the installer's `restore`.
 - **A crash loses them.** When an app exits unexpectedly, the head unit empties its data folder, and uninstalls the app the second time (idrive7-apps' README, "Crash handling is harsh"). That takes the saves and the games copied to the data folder with it, so keep your games on the PC too. The two games that come with the app and those on a USB stick are not in that folder.
@@ -78,12 +97,15 @@ An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, 
 | Controller turn left | Start, Select, B, A, Nothing |
 | Touch buttons beside the picture | on, off |
 | USB gamepad (Xbox pad on a cable; needs the NES game loader) | off, on |
+| Add games over the Wi-Fi the car is on (home, phone hotspot) | on, off |
 | Picture edges | Hidden, as on a TV (224 lines); Shown (240 lines) |
 | Less sprite flicker (no 8-sprite limit) | off, on |
 
+They are the tab *Settings* of the games screen, and the menu's *Settings*, which opens the head unit's own screen of them.
+
 ### Parked only
 
-With *Parked only* on, the game stops and saves once the car moves faster than 3 km/h. The app goes back to its menu, and the menu says why. *Continue* carries on when the car stands again. The code of *Add games from a phone* shows only while the car stands, too.
+With *Parked only* on, the game stops and saves once the car moves faster than 3 km/h. The list of games takes its place and says why. *Continue* carries on when the car stands again. The code of *Add games from a phone* shows only while the car stands, too.
 
 ## How it works
 
@@ -130,7 +152,7 @@ Then open http://localhost:8077. *Pad Test* and *Snake* are there at once; for y
 
 *The emulator page. On the screen, the 240p Test Suite's own measurement of the emulated console: NTSC, 60.10 frames a second.*
 
-- **Starting a game:** the main menu's rows are the buttons in the side panel (the emulator doesn't draw the head unit's own lists). The games are the buttons after *Restart*, in the menu's order, by name.
+- **Starting a game:** the main menu's rows are the buttons in the side panel (the emulator doesn't draw the head unit's own lists). *Games* opens the games screen, which is drawn; the keys below steer it. The picture of the page above is from before the menu was four rows.
 - **Controls:** the arrow keys push the iDrive controller, `Enter` presses it, the mouse wheel and `[` `]` turn it, `Backspace` is BACK. A click on a drawn button is a tap.
 - **The first knob click** after the app starts only tells the app where the knob stands, so the first `[` does nothing. On the car the app also asks for the controller's state at start.
 - **A real gamepad:** `npm run emu -- --pad` reads a USB gamepad plugged into the PC as the head unit would, with the app's setting *USB gamepad* on. The pad must be free of its kernel driver; on Windows that means handing it to WSL. [`tools/pad-try.js`](tools/pad-try.js) says how, and shows the pad's buttons without the emulator.
@@ -159,7 +181,8 @@ npm run test:node8
 Both run without a game, a browser or the kit. They cover:
 
 - the emulator on a small test cartridge the test assembles itself: the picture, pad 1 reaching the game, the cut edges, save states (also into a new instance), files that are no cartridge, and the core's memory never growing
-- the controls: push and press held, also when they are over within a frame, one tap per knob click, the settings' assignments, touch buttons, a lost release, nothing while the game is stopped
+- the controls: push and press held, also when they are over within a frame, one tap per knob click, the settings' assignments, touch buttons, a lost release, nothing while the game is stopped; and the same controller and buttons steering the tabs, with the press that chose a game kept from the game
+- the tabs of the games screen: the list under the game played last, as many rows as fit, *Start over*, the way between the tabs and a page, a setting switched and stepped
 - the games and saves on disk: the app's packs, the data folder and a USB stick's folder, titles, state, battery memory, the game played last
 - the two games that come with the app, played in the emulator: every button of Pad Test lights and counts, and Snake is steered to an apple, paused, run into a wall and started again
 - games from a phone: the QR code against a reference encoder's, and the NES game loader from the app's request to a game sent over HTTP, with a stand-in for the head unit's firewall program: what it takes and refuses, where it writes, the firewall rules while the page is open and after (not on Windows); and, run as root on Linux, the page as the app's own user saving a game in an app's folder laid out and owned as a car has it
@@ -299,7 +322,8 @@ The emulator on a PC draws with the kit's own draw engine and runs the kit's own
 - **Speed and memory:** on a PC under Node 8, a frame takes under a millisecond and the app's process holds about 110 MB with a game running (the kit's Doom engine alone, measured the same way: about 165 MB). The head unit's processor is slower, and the app platform stops apps that go over its CPU and memory limits.
 - **Smoothness:** whether the game gets exactly one frame for each of the screen's, as it does when the PC test ticks it at 60 Hz.
 - **Touch buttons:** whether taps land on the head unit's hidden bar buttons where the app draws them. The positions come from the kit's own model of the screen.
-- **The menu:** whether the head unit hides the unused game rows. If it doesn't, they show as "-".
+- **The menu:** whether *Continue* is hidden while no game was played yet. If it isn't, it shows without a game's name and does nothing.
+- **The games screen** (0.5.0): all of it. That the controller steers it (it comes to the app as in a game, where it has not been reported on either), that taps land on TAB, UP, DOWN and OK, that the gamepad steers it, and that the rows can be read from the driver's seat. The emulator shows the page and takes all three; the menu's *Continue* and *Settings* do not depend on any of it.
 - **The controller:** the gate holding the knob for the game, and the first knob click counting.
 - **A drawn screen beside the game's:** one car showed there is none. The GPU renderer shows the first drawn screen of an app, and every picture the app handed the HMI itself, for that screen or a second, was answered with `INVALID_MODELID` (the app's log has it). With 0.4.0, "Add games from a phone" was a second drawn screen and stayed empty. Since 0.4.1 it is drawn on the game's screen, in the game's place, by the renderer. On that car, with 0.4.2, a phone then opened the page behind the code, whose address only that screen tells: so it shows there.
 - **Games from a phone:** tried on one car (2026-11-20; the app 0.4.2, the loader 0.2.2), on its owner's home Wi-Fi, where the head unit had `192.168.1.x` on `wlan0` and `172.16.222.97` on `wlan_bridge` at once. A phone on that Wi-Fi opened the page at the `wlan0` address, so it got through the head unit's firewall there. That the loader's rule is what let it in is taken from that alone: the loader's journal of it was not read. The game it sent was not saved: "the car could not save it (EACCES)". The loader had started the page as the owner of the app's folder, which on a head unit is the Store's user and not the app's, and outside a folder the app's user enters only through a group the head unit gives its apps' processes ([`loader/games.js`](loader/games.js) has the folders as read there). Since 0.2.3 the page is the app's own user, the number in its folder's name, and is started inside the app's data folder. That saves a game in a copy of those folders on a PC, and is still for a car to show. The car's own Wi-Fi (`wlan_bridge`) is untried. `journalctl -u clucraft-nes-loader` on the head unit says what the loader did.
@@ -320,6 +344,7 @@ The emulator on a PC draws with the kit's own draw engine and runs the kit's own
 ```
 app/                  the head-unit app: app.json, main.js (screens, pacing, saving),
                       nes-core.js (the emulator's runner), controls.js, library.js,
+                      tabs.js (the games screen: the list of games, Add games, the settings),
                       phone.js and qr.js (Add games from a phone), pad.js (a USB gamepad),
                       nes.wasm (the emulator, built by core/build.sh), icon.png,
                       games/ (the two games that come with it), roms/ (your games)
@@ -335,7 +360,7 @@ mgu-repo.json         what the MGU Store reads: the app, what it needs, where it
 store/                the package the MGU Store installs (no SDK, no games but the app's two),
                       its app.json and icon;
                       written by tools/build-store.js
-test/run.js           tests of the emulator, the controls, the saves, the two games, the loader and
+test/run.js           tests of the emulator, the controls, the tabs, the saves, the two games, the loader and
                       store/ (Node 8 and current); fake-nft.js stands in for the firewall program,
                       fake-usbpipe.js for a gamepad
 tools/                setup.js, emu.js, build-car.js, node8.js; build-store.js and tar.js (store/);

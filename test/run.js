@@ -1,7 +1,8 @@
 'use strict';
 
 // NES app: the emulator (app/nes.wasm through nes-core.js) on a small test program made here,
-// the controller -> pad mapping (controls.js), the games / saves on disk (library.js) and the two
+// the controller -> pad mapping (controls.js), the tabs of the game's screen (tabs.js: the list of games, the
+// settings, and what steers them), the games / saves on disk (library.js) and the two
 // games that come with the app (app/games/), played in the emulator. "Add games from a phone": the QR
 // code (qr.js) and the NES game loader (loader/) from the app's request to a game sent over HTTP, with a
 // stand-in for the head unit's firewall program. A USB gamepad: what its packets mean (loader/pad.js), and
@@ -26,6 +27,7 @@ const net = require('net');
 const { qr } = require(path.join(ROOT, 'app/qr'));
 const { Phone } = require(path.join(ROOT, 'app/phone'));
 const { Pad, PAD, toNes } = require(path.join(ROOT, 'app/pad'));
+const { Tabs } = require(path.join(ROOT, 'app/tabs'));
 const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')), page: require(path.join(ROOT, 'loader/page')) };
 
 let failed = 0;
@@ -218,6 +220,147 @@ function writePack(file, files) {
         c.enable(false); c.enable(true);                       // its buttons are let go with the game: no button stuck at the next start
         assert.strictEqual(c.mask(), 0);
     });
+
+    await check('controls: while the tabs show, the controller and the four touch buttons steer them; the press that chose a game is not the game\'s until it was let go', () => {
+        const got = [];
+        const c = new Controls({ log, now: () => now, press: () => 'a', turnR: () => 'b', turnL: () => 'start', nav: (e) => got.push(e) });
+        c.raw(ev(7, 0, 0), true);
+        c.raw(ev(9, 0, 0), true);                              // nobody asked for the tabs yet
+        assert.deepStrictEqual(got, []);
+        c.navigate(true);
+        c.raw(ev(11, 0, 0), true); c.raw(ev(10, 0, 0), true);
+        c.raw(ev(10, 0, 1), true); c.raw(ev(10, 0, 2), true); c.raw(ev(10, 0, 0), true);    // pushed up, held on, let go: one push
+        c.raw(ev(10, 0, 'OST_KURZ_GEDRUECKT'), true); c.raw(ev(10, 0, 7), true); c.raw(ev(10, 0, 10), true); c.raw(ev(10, 0, 0), true);
+        c.raw(ev(10, 1, 0), true);
+        assert.deepStrictEqual(got, [{ turn: 2 }, { turn: -1 }, { push: 'N' }, { push: 'E' }, { push: 'S' }, { push: 'W' }, { press: true }]);
+        assert.strictEqual(c.mask(), 0, 'a button for a game while the tabs show');
+        got.length = 0; now += 1000;
+        ['BTN_SELECT', 'BTN_START', 'BTN_B', 'BTN_A'].forEach((b) => assert(c.bar(b), b));
+        assert.deepStrictEqual(got, [{ tab: 1 }, { push: 'N' }, { push: 'S' }, { press: true }]);
+        // the game starts with the press still down, and a gamepad's A and D-pad with it
+        c.setExternal(BTN.A | BTN.RIGHT);
+        c.enable(true); c.navigate(false);
+        assert.strictEqual(c.mask(), 0, 'the press that chose the game reached it');
+        c.setExternal(BTN.RIGHT); c.raw(ev(10, 0, 0), true);   // A let go, on both
+        c.setExternal(BTN.RIGHT | BTN.A); c.raw(ev(10, 1, 0), true);
+        assert.strictEqual(c.mask(), BTN.A, 'pressed anew it is the game\'s; what was never let go is not');
+        got.length = 0;
+        c.raw(ev(12, 0, 0), true);
+        assert.deepStrictEqual(got, [], 'the tabs steered while a game runs');
+        // and as it happens in the app: the game starts while the tabs are told of the press
+        const d = new Controls({ log, now: () => now, press: () => 'a', turnR: () => 'b', turnL: () => 'start', nav: (e) => { if (e.press) { d.enable(true); d.navigate(false); } } });
+        d.navigate(true);
+        d.raw(ev(3, 0, 0), true); d.raw(ev(3, 1, 0), true);
+        assert(d.enabled && d.mask() === 0, 'the press that started the game was its first button');
+        d.raw(ev(3, 0, 0), true); d.raw(ev(3, 1, 0), true);
+        assert.strictEqual(d.mask(), BTN.A);
+    });
+
+    /* ---------- the tabs of the game's screen (tabs.js) ---------- */
+    {
+        // (a stand-in for the kit's Recorder: what was written where)
+        const paper = () => {
+            const said = [];
+            const r = { said, text(s, x, y, size) { said.push(String(s)); return String(s).length * size * 0.5; }, textWidth: (s, size) => String(s).length * size * 0.5 };
+            ['roundRect', 'strokeRoundRect', 'fillRect', 'circle'].forEach((k) => { r[k] = () => r; });
+            return r;
+        };
+        const kept = (schema) => {
+            const v = {};
+            schema.forEach((s) => { v[s.key] = s.default; });
+            return { schema, v, get: (k) => v[k], set: (k, x) => { v[k] = x; }, shown: (s) => !s.hidden, display: (k) => 'is ' + v[k] };
+        };
+        const games = 'Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India Juliett Kilo Lima'.split(' ').map((t, i) => ({ id: 'g' + i, title: t }));
+        await check('tabs: the games by title under the one played last; the controller goes through them, a press plays one, "Start over" beside it from power-on', () => {
+            const played = [], opened = [];
+            let cur = games[3];
+            const tabs = new Tabs({ games: () => games, current: () => cur, settings: kept([]), onPlay: (g, fresh) => played.push([g.id, fresh]), onTab: (n) => opened.push(n) });
+            tabs.open('games');
+            assert.deepStrictEqual(tabs.rows().map((q) => q.game.id + (q.last ? '*' : '')), ['g3*'].concat(games.map((g) => g.id)));
+            tabs.input({ press: true });
+            tabs.input({ turn: 2 }); tabs.input({ push: 'E' }); tabs.input({ press: true });
+            tabs.input({ press: true });                           // ("Start over" was for that one press)
+            tabs.input({ push: 'E' }); tabs.input({ push: 'S' }); tabs.input({ press: true });   // (and is left by moving on)
+            assert.deepStrictEqual(played, [['g3', false], ['g1', true], ['g1', false], ['g2', false]]);
+            // as many rows as the page holds, the one in focus among them
+            let r = paper();
+            tabs.input({ turn: 100 });
+            tabs.draw(r, 0, 0, 1, 520, {});
+            assert.strictEqual(tabs.fit, 6);
+            assert.deepStrictEqual(r.said.filter((s) => games.some((g) => g.title === s)), games.slice(6).map((g) => g.title));
+            assert(r.said.indexOf('Play') >= 0 && r.said.indexOf('Start over') >= 0 && r.said.indexOf('Continue') < 0, r.said.join(' | '));
+            tabs.input({ turn: -100 });
+            r = paper();
+            tabs.draw(r, 0, 0, 1, 520, { notice: 'Parked only' });
+            assert.deepStrictEqual(r.said.filter((s) => games.some((g) => g.title === s)), ['Delta'].concat(games.slice(0, 5).map((g) => g.title)));
+            assert(r.said.indexOf('Continue') >= 0 && r.said.indexOf('Parked only') >= 0);
+            // no game played yet, no games at all
+            cur = null;
+            assert.strictEqual(tabs.rows().length, games.length);
+            const none = new Tabs({ games: () => [], current: () => null, settings: kept([]) });
+            none.open('games');
+            assert.strictEqual(none.zone, 'tabs', 'the focus on a page without rows');
+            r = paper();
+            none.draw(r, 0, 0, 1, 520, {});
+            assert(r.said.indexOf('No games yet') >= 0);
+            none.input({ press: true }); none.input({ push: 'S' }); none.input({ turn: 3 });
+            assert.deepStrictEqual([none.zone, none.name], ['tabs', 'settings']);
+        });
+        await check('tabs: up from the first row to the tabs, along them and down into a page; a gamepad\'s LB and RB go round them from anywhere', () => {
+            const opened = [], drawn = [];
+            const tabs = new Tabs({ games: () => games, current: () => null, settings: kept([{ key: 'a', label: 'A switch', type: 'bool', default: true }]), onTab: (n) => opened.push(n),
+                drawAdd: (r, x, y, k, h) => drawn.push([x, y, k, h]) });
+            tabs.open('games');
+            tabs.input({ push: 'S' }); tabs.input({ push: 'N' });
+            assert.deepStrictEqual([tabs.zone, tabs.at.games], ['page', 0]);
+            tabs.input({ push: 'N' });
+            assert.strictEqual(tabs.zone, 'tabs');
+            tabs.input({ push: 'W' }); tabs.input({ turn: -3 });   // the first tab: no further
+            assert.deepStrictEqual([tabs.name, opened], ['games', []]);
+            tabs.input({ turn: 1 });
+            tabs.input({ press: true }); tabs.input({ push: 'S' }); // (the page of a phone's code has no rows)
+            assert.deepStrictEqual([tabs.name, tabs.zone], ['add', 'tabs']);
+            tabs.draw(paper(), 100, 10, 2, 500, {});
+            assert.deepStrictEqual(drawn, [[100, 10 + 92 * 2, 2, 408]], 'the page of a phone\'s code goes under the tabs');
+            tabs.input({ push: 'E' }); tabs.input({ push: 'E' });
+            tabs.input({ push: 'S' });
+            assert.deepStrictEqual([tabs.name, tabs.zone], ['settings', 'page']);
+            tabs.input({ tab: 1 });
+            assert.deepStrictEqual([tabs.name, tabs.zone], ['games', 'page']);
+            tabs.input({ tab: -1 }); tabs.input({ tab: -1 });
+            assert.deepStrictEqual([tabs.name, tabs.zone], ['add', 'tabs'], 'no rows on that page: the focus is on the tabs');
+            assert.deepStrictEqual(opened, ['add', 'settings', 'games', 'settings', 'add']);
+            const rev = tabs.rev;
+            tabs.input({ turn: 1 });
+            assert(tabs.rev > rev, 'what changed is not told (rev)');
+        });
+        await check('tabs: a setting is a switch, or one value of several: a press goes on to the next, a push right or left as far as the last or first; hidden ones are no rows', () => {
+            const s = kept([{ key: 'parked', label: 'Parked only', type: 'bool', default: true },
+                { key: 'turn', label: 'Turn left', type: 'choice', default: 'start', options: [['start', 'Start'], ['select', 'Select'], ['none', 'Nothing']] },
+                { key: 'secret', label: 'Not shown', type: 'bool', default: false, hidden: true }]);
+            const tabs = new Tabs({ games: () => [], current: () => null, settings: s });
+            tabs.open('settings');
+            assert.deepStrictEqual(tabs.rows().map((q) => q.item.key), ['parked', 'turn']);
+            tabs.input({ press: true });
+            assert.strictEqual(s.v.parked, false);
+            tabs.input({ push: 'W' });
+            assert.strictEqual(s.v.parked, false, 'off, pushed left');
+            tabs.input({ push: 'E' });
+            assert.strictEqual(s.v.parked, true);
+            tabs.input({ turn: 1 });
+            tabs.input({ push: 'W' });
+            assert.strictEqual(s.v.turn, 'start', 'the first value, pushed left');
+            tabs.input({ push: 'E' }); tabs.input({ push: 'E' }); tabs.input({ push: 'E' });
+            assert.strictEqual(s.v.turn, 'none');
+            tabs.input({ press: true });
+            assert.strictEqual(s.v.turn, 'start', 'a press goes round');
+            tabs.input({ press: true });
+            assert.strictEqual(s.v.turn, 'select');
+            const r = paper();
+            tabs.draw(r, 0, 0, 1, 520, {});
+            assert(['Parked only', 'On', 'Turn left', 'is select'].every((t) => r.said.indexOf(t) >= 0) && r.said.indexOf('Not shown') < 0, r.said.join(' | '));
+        });
+    }
 
     /* ---------- a USB gamepad: what its packets mean (loader/pad.js), and its buttons as the NES pad's (app/pad.js) ---------- */
     /** an Xbox pad's input report: its two button bytes and its left stick */
@@ -765,11 +908,11 @@ function writePack(file, files) {
         // Xbox button, which wants an answer; and then it waits to be pulled out
         const does = [report(0x10, 0), report(0, 0x04), report(0x40, 0, 30000, 0), report(0x04, 0), report(0, 0)].map((b) => b.toString('hex')).concat(['07302a02015b', 'pulled']).join(',');
         const dev = { kind: 'gip', node: '/dev/bus/usb/001/004', iface: 0, epIn: 0x82, epOut: 0x02, packet: 64, vid: 0x045e, pid: 0x02ea, name: 'Controller' };
-        const padSaid = [], seen = [];
+        const padSaid = [], seen = [], own = [];
         let plugged = false;
         const padService = loader.service.createService({ listen: sock('pad'), nft: null, asSelf: true, exit: false, idleMs: 1e9, padScanMs: 40, padFind: () => (plugged ? [dev] : []),
             padPipe: [process.execPath, path.join(ROOT, 'test', 'fake-usbpipe.js'), padLog, does], padEnv: process.env, log: (s) => padSaid.push(s) });
-        const pad = new Pad({ socket: sock('pad'), log, onMask: (m) => seen.push(m) });
+        const pad = new Pad({ socket: sock('pad'), log, onMask: (m) => seen.push(m), onButtons: (b) => own.push(b) });
         try {
             await check('gamepad: the app asks while a game runs; a pad plugged in then is switched on, and its buttons are the NES pad\'s in the app', async () => {
                 pad.start();
@@ -779,6 +922,7 @@ function writePack(file, files) {
                 plugged = true;
                 await until('its buttons', () => seen.length >= 5);
                 assert.deepStrictEqual(seen, [BTN.A, BTN.LEFT, BTN.RIGHT | BTN.B, BTN.START, 0]);
+                assert.deepStrictEqual(own, [PAD.A, PAD.LEFT, PAD.RIGHT | PAD.X, PAD.START, 0], 'the pad\'s own buttons, for the tabs');
                 assert.strictEqual(pad.name, 'Controller');
                 const log0 = wrote();
                 assert.strictEqual(log0[0], 'args /dev/bus/usb/001/004 0 82 2 64', 'what the program is started with');
@@ -967,13 +1111,19 @@ function writePack(file, files) {
         r = run();
         assert(r.status === 1 && /build:store/.test(r.stderr), 'no clear failure without the package: ' + r.status + ' ' + r.stderr);
     });
-    await check('app: one drawn screen, the game\'s, and every picture goes to it (the GPU renderer shows an app\'s first drawn screen only; a car\'s HMI took no picture for a second)', () => {
+    await check('app: one drawn screen, the game\'s, and every picture goes to it (the GPU renderer shows an app\'s first drawn screen only; a car\'s HMI took no picture for a second); a menu of four rows before it', () => {
         assert.deepStrictEqual(spec.screens.filter((s) => s.kind === 'canvas').map((s) => s.name), ['GAME']);
         const main = fs.readFileSync(path.join(ROOT, 'app/main.js'), 'utf8');
         const to = (main.match(/ui\.image\('[A-Z_]+'/g) || []).filter((v, i, all) => all.indexOf(v) === i);
         assert.deepStrictEqual(to, ['ui.image(\'GAME_GFX\''], 'a picture for another screen');
-        assert(!/ui\.open\('(?!MAIN'|GAME')/.test(main), 'a screen opened that is neither the menu nor the game\'s');
-        assert(spec.screens[0].items.some((it) => it[1] === 'BTN_ADD'), '"Add games from a phone" is in the menu');
+        assert(!/ui\.open\('(?!MAIN'|GAME'|SETTINGS')/.test(main), 'a screen opened that is not the menu, the game\'s, or the HMI\'s own of the settings');
+        assert.deepStrictEqual(spec.screens[0].items.map((it) => it[1]), ['BTN_PLAY', 'BTN_GAMES', 'BTN_ADD', 'BTN_SET', 'MENU_INFO'], 'the menu\'s rows');
+        assert(spec.screens[0].settings !== true && spec.settings.length > 0, 'the settings are not rows of the menu: the kit makes the HMI\'s own screen of them');
+        // every row of the menu is answered, and the four touch buttons have a name on the tabs
+        spec.screens[0].items.filter((it) => it[0] === 'button').forEach((it) => assert(main.indexOf('ui.onClick(\'' + it[1] + '\'') >= 0, it[1] + ' does nothing'));
+        const bar = spec.screens.find((s) => s.name === 'GAME').buttons.map((b) => b[0]);
+        assert.deepStrictEqual(bar, ['BTN_SELECT', 'BTN_START', 'BTN_B', 'BTN_A']);
+        bar.forEach((b) => assert(new RegExp(b + ': \'').test(main), b + ' has no name on the tabs'));
     });
 
     console.log(failed ? failed + ' failed' : 'nes: all ok');

@@ -8,9 +8,10 @@
  * (loader/service.js, loader/pad.js). This is the asking, and the pad's buttons as the NES pad's.
  *
  *   const pad = new Pad({ socket, log, onMask });
- *   pad.start();         a game runs: ask for a pad's buttons, and keep asking while it does
- *   pad.stop();          it stopped: the loader lets go of the pad
+ *   pad.start();         the game's screen is up: ask for a pad's buttons, and keep asking while it is
+ *   pad.stop();          it is gone: the loader lets go of the pad
  *   onMask(mask)         the NES pad's buttons the gamepad holds now (BTN masks; 0 when it lets go or is gone)
+ *   onButtons(buttons)   the gamepad's own buttons (PAD masks), LB and RB among them: for the tabs (tabs.js)
  *   pad.name             the pad's name while one is plugged in, else null
  *
  * Xbox pad -> NES pad: D-pad and left stick the D-pad, A and B the A, X and Y the B, Menu the Start, View
@@ -47,6 +48,7 @@ class Pad {
         this.conn = null;
         this.retry = null;
         this.mask = 0;
+        this.buttons = 0;
         this.name = null;
         this.given = false;             // the loader has no gamepads (an older one), or cannot read this one: not asked again
         this.said = '';
@@ -54,10 +56,16 @@ class Pad {
 
     _say(s) { if (s !== this.said) { this.said = s; this.log.info('gamepad: ' + s); } }
 
-    _mask(m) {
-        if (m === this.mask) return;
-        this.mask = m;
-        if (this.o.onMask) { try { this.o.onMask(m); } catch (e) { this.log.error('gamepad: onMask', e); } }
+    /** b: the gamepad's buttons as the loader tells them (0: let go, or no pad) */
+    _mask(b) {
+        const m = toNes(b), was = this.buttons;
+        this.buttons = b;
+        // (the NES pad's first: a button that chooses a game on the tabs is known as held when the game starts)
+        if (m !== this.mask) {
+            this.mask = m;
+            if (this.o.onMask) { try { this.o.onMask(m); } catch (e) { this.log.error('gamepad: onMask', e); } }
+        }
+        if (b !== was && this.o.onButtons) { try { this.o.onButtons(b); } catch (e) { this.log.error('gamepad: onButtons', e); } }
     }
 
     start() {
@@ -115,7 +123,7 @@ class Pad {
                 if (!p || !p.on) continue;
                 this.name = typeof p.name === 'string' ? p.name : null;
                 this._say(this.name ? this.name + ' plugged in' : 'none plugged in');
-                this._mask(this.name ? toNes(p.buttons | 0) : 0);
+                this._mask(this.name ? p.buttons | 0 : 0);
             }
         });
         const gone = () => {
