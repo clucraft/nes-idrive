@@ -12,10 +12,21 @@
  * layout of its input report are the Linux kernel's (drivers/input/joystick/xpad.c).
  *
  *   find()             the pads plugged in: [{ kind, node, iface, epIn, epOut, packet, vid, pid, name }]
- *   open(dev, opts)    reads one: opts.onButtons(bits) whenever they change, opts.onClose(why, unplugged) when
- *                      it ends by itself; -> { close() }
+ *   open(dev, opts)    reads one: opts.onButtons(bits) whenever they change, opts.onState(state) whenever
+ *                      anything the pad tells does, opts.onClose(why, unplugged) when it ends by itself;
+ *                      -> { close() }
  *   PAD                the bits: UP DOWN LEFT RIGHT A B X Y START SELECT L R, as the Xbox pad names its buttons
  *                      (START its Menu button, SELECT its View button; the left stick counts as the D-pad too)
+ *   state              the whole pad, for a program that wants more than the NES app does (the app gets the
+ *                      bits above, and nothing of this goes over the loader's socket):
+ *                        { buttons, lt, rt, lx, ly, rx, ry }
+ *                      buttons: PAD_FULL's bits, which are PAD's and LS, RS for the sticks pressed in; the
+ *                               D-pad as it is pressed, with no stick counted into it
+ *                      lt, rt:  the triggers, 0 to TRIGGER_MAX (1023)
+ *                      lx, ly, rx, ry: the sticks, -32768 to 32767; right and up are the greater numbers
+ *                      Seen from a real Xbox One S pad: the buttons, the D-pad, both sticks and the right
+ *                      trigger. The left trigger and the sticks pressed in are where the kernel driver has
+ *                      them, and have not been seen from a pad.
  *
  * Part of the NES game loader (nes-idrive, GPL-2.0-or-later). Runs on the head unit's Node 8.
  */
@@ -26,8 +37,14 @@ const SYS_USB = '/sys/bus/usb/devices';
 const DEV_USB = '/dev/bus/usb';
 /** (app/pad.js has the same: this is what goes over the loader's socket) */
 const PAD = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, A: 0x10, B: 0x20, X: 0x40, Y: 0x80, START: 0x100, SELECT: 0x200, L: 0x400, R: 0x800 };
+/** state.buttons: those, and the two sticks pressed in */
+const PAD_FULL = Object.assign({}, PAD, { LS: 0x1000, RS: 0x2000 });
 const STICK = 16000;                // of 32767: the left stick this far out is a direction
+const TRIGGER_MAX = 1023;           // a trigger pulled all the way
 const REANNOUNCE_MS = 1000;         // a pad that says hello again after this was not switched on: once more
+const FIELDS = ['buttons', 'lt', 'rt', 'lx', 'ly', 'rx', 'ry'];
+/** a pad with nothing held and its sticks in the middle */
+const rest = () => ({ buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0 });
 
 /* ---------- the Xbox pads' protocol ---------- */
 const GIP = { ACK: 0x01, ANNOUNCE: 0x02, KEY: 0x07, INPUT: 0x20, OPT_ACK: 0x10, OPT_INTERNAL: 0x20 };
@@ -51,6 +68,32 @@ const GIP_INIT = [
     [0x24c6, 0x541a, RUMBLE_OFF], [0x24c6, 0x542a, RUMBLE_OFF], [0x24c6, 0x543a, RUMBLE_OFF],
 ];
 
+/**
+ * Everything an Xbox pad's input report tells (xpad.c, xpadone_process_packet): the state, as the top of this
+ * file has it. A report too short for a field leaves it 0.
+ */
+function gipState(d) {
+    const s = rest();
+    if (d[4] & 0x04) s.buttons |= PAD.START;
+    if (d[4] & 0x08) s.buttons |= PAD.SELECT;
+    if (d[4] & 0x10) s.buttons |= PAD.A;
+    if (d[4] & 0x20) s.buttons |= PAD.B;
+    if (d[4] & 0x40) s.buttons |= PAD.X;
+    if (d[4] & 0x80) s.buttons |= PAD.Y;
+    if (d[5] & 0x01) s.buttons |= PAD.UP;
+    if (d[5] & 0x02) s.buttons |= PAD.DOWN;
+    if (d[5] & 0x04) s.buttons |= PAD.LEFT;
+    if (d[5] & 0x08) s.buttons |= PAD.RIGHT;
+    if (d[5] & 0x10) s.buttons |= PAD.L;
+    if (d[5] & 0x20) s.buttons |= PAD.R;
+    if (d[5] & 0x40) s.buttons |= PAD_FULL.LS;
+    if (d[5] & 0x80) s.buttons |= PAD_FULL.RS;
+    if (d.length >= 10) { s.lt = Math.min(TRIGGER_MAX, d.readUInt16LE(6)); s.rt = Math.min(TRIGGER_MAX, d.readUInt16LE(8)); }
+    if (d.length >= 14) { s.lx = d.readInt16LE(10); s.ly = d.readInt16LE(12); }      // up is the greater number
+    if (d.length >= 18) { s.rx = d.readInt16LE(14); s.ry = d.readInt16LE(16); }      // the same
+    return s;
+}
+
 class Gip {
     /** dev: { vid, pid }; now(): milliseconds (a test's clock) */
     constructor(dev, now) {
@@ -70,30 +113,19 @@ class Gip {
         });
     }
 
-    /** one packet from the pad -> { buttons } when it tells them, { send: [packets] } when it wants an answer */
+    /**
+     * one packet from the pad -> { buttons, state } when it tells them (buttons: PAD's bits, the left stick
+     * counted as the D-pad; state: the whole pad), { send: [packets] } when it wants an answer
+     */
     packet(d) {
         if (!d || d.length < 4) return {};
         if (d[0] === GIP.INPUT) {
             if (d.length < 6) return {};
-            let b = 0;
-            if (d[4] & 0x04) b |= PAD.START;
-            if (d[4] & 0x08) b |= PAD.SELECT;
-            if (d[4] & 0x10) b |= PAD.A;
-            if (d[4] & 0x20) b |= PAD.B;
-            if (d[4] & 0x40) b |= PAD.X;
-            if (d[4] & 0x80) b |= PAD.Y;
-            if (d[5] & 0x01) b |= PAD.UP;
-            if (d[5] & 0x02) b |= PAD.DOWN;
-            if (d[5] & 0x04) b |= PAD.LEFT;
-            if (d[5] & 0x08) b |= PAD.RIGHT;
-            if (d[5] & 0x10) b |= PAD.L;
-            if (d[5] & 0x20) b |= PAD.R;
-            if (d.length >= 14) {                                 // the left stick: up is the greater number
-                const x = d.readInt16LE(10), y = d.readInt16LE(12);
-                if (x > STICK) b |= PAD.RIGHT; else if (x < -STICK) b |= PAD.LEFT;
-                if (y > STICK) b |= PAD.UP; else if (y < -STICK) b |= PAD.DOWN;
-            }
-            return { buttons: b };
+            const s = gipState(d);
+            let b = s.buttons & ~(PAD_FULL.LS | PAD_FULL.RS);
+            if (s.lx > STICK) b |= PAD.RIGHT; else if (s.lx < -STICK) b |= PAD.LEFT;
+            if (s.ly > STICK) b |= PAD.UP; else if (s.ly < -STICK) b |= PAD.DOWN;
+            return { buttons: b, state: s };
         }
         if (d[0] === GIP.KEY) {
             // the Xbox button: an Xbox One S pad sends its report again and again until it is acknowledged
@@ -101,7 +133,7 @@ class Gip {
             return { send: [Buffer.from([GIP.ACK, GIP.OPT_INTERNAL, d[2], 0x09, 0x00, GIP.KEY, GIP.OPT_INTERNAL, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])] };
         }
         // hello: at the start every pad says it (it is being switched on already); later, a pad that started anew
-        if (d[0] === GIP.ANNOUNCE && this.now() - this.startT > REANNOUNCE_MS) return { buttons: 0, send: this.start() };
+        if (d[0] === GIP.ANNOUNCE && this.now() - this.startT > REANNOUNCE_MS) return { buttons: 0, state: rest(), send: this.start() };
         return {};
     }
 }
@@ -148,12 +180,12 @@ function find(opts) {
 /* ---------- reading one ---------- */
 /**
  * opts: { pipe: [the nes-usbpipe program, arguments before its own...], as: { uid, gid } to run it as, env,
- *         onButtons(bits), onClose(why), log(line) }
+ *         onButtons(bits), onState(state), onClose(why, unplugged), log(line) }
  */
 function open(dev, opts) {
     const o = opts || {}, log = o.log || (() => {}), gip = new Gip(dev);
     const args = o.pipe.slice(1).concat([dev.node, String(dev.iface), dev.epIn.toString(16), dev.epOut.toString(16), String(dev.packet)]);
-    let child = null, buttons = 0, text = '', errText = '', lastErr = '', over = false, said = 0;
+    let child = null, buttons = 0, state = rest(), text = '', errText = '', lastErr = '', over = false, said = 0;
     const end = (why, unplugged) => { if (over) return; over = true; if (o.onClose) o.onClose(why, !!unplugged); };
     try {
         child = spawn(o.pipe[0], args, Object.assign({ cwd: '/', env: o.env || { PATH: process.env.PATH || '/usr/bin:/bin' }, stdio: ['pipe', 'pipe', 'pipe'] }, o.as || {}));
@@ -179,6 +211,7 @@ function open(dev, opts) {
             const r = gip.packet(Buffer.from(line, 'hex'));
             if (r.send) send(r.send);
             if (r.buttons !== undefined && r.buttons !== buttons) { buttons = r.buttons; if (o.onButtons) o.onButtons(buttons); }
+            if (r.state && FIELDS.some((k) => r.state[k] !== state[k])) { state = r.state; if (o.onState) o.onState(state); }
         }
         if (text.length > 4096) { stop(); end('its helper sent no packets but ' + text.length + ' characters'); }
     });
@@ -198,4 +231,4 @@ function open(dev, opts) {
     return { close() { if (over) return; over = true; stop(); } };
 }
 
-module.exports = { PAD, STICK, Gip, find, open };
+module.exports = { PAD, PAD_FULL, STICK, TRIGGER_MAX, Gip, find, open };

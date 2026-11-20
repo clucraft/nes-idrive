@@ -222,6 +222,8 @@ function writePack(file, files) {
     /* ---------- a USB gamepad: what its packets mean (loader/pad.js), and its buttons as the NES pad's (app/pad.js) ---------- */
     /** an Xbox pad's input report: its two button bytes and its left stick */
     const report = (b4, b5, x, y) => { const d = Buffer.alloc(18); d[0] = 0x20; d[3] = 0x0e; d[4] = b4; d[5] = b5; d.writeInt16LE(x || 0, 10); d.writeInt16LE(y || 0, 12); return d; };
+    /** the same with its triggers and its right stick too */
+    const whole = (b4, b5, lt, rt, x, y, rx, ry) => { const d = report(b4, b5, x, y); d.writeUInt16LE(lt, 6); d.writeUInt16LE(rt, 8); d.writeInt16LE(rx, 14); d.writeInt16LE(ry, 16); return d; };
     const XBOX_ONE_S = { vid: 0x045e, pid: 0x02ea };
     await check('gamepad: an Xbox One S pad is switched on by the kernel driver\'s four packets, counted; another make\'s pad by three', () => {
         const hexes = (list) => list.map((b) => b.toString('hex'));
@@ -262,6 +264,36 @@ function writePack(file, files) {
         assert.strictEqual(g.packet(Buffer.from('07300102015b', 'hex')).send[0].toString('hex'), '01200109000720020000000000');
         assert.strictEqual(g.packet(Buffer.from('07300202005b', 'hex')).send[0].toString('hex'), '01200209000720020000000000');
     });
+    await check('gamepad: the whole pad, for a program that wants it: both sticks, both triggers, the sticks pressed in, and the D-pad apart from the stick', () => {
+        const g = new loader.pad.Gip(XBOX_ONE_S), P = loader.pad.PAD, F = loader.pad.PAD_FULL, far = loader.pad.STICK + 1;
+        Object.keys(P).forEach((k) => assert.strictEqual(F[k], P[k], k + ' is the same bit in both'));
+        assert(F.LS && F.RS && F.LS !== F.RS && !Object.keys(P).some((k) => P[k] & (F.LS | F.RS)), 'the sticks pressed in are bits of their own');
+        let r = g.packet(whole(0x10, 0xc1, 300, 1023, -far, far, 32767, -32768));
+        assert.deepStrictEqual(r.state, { buttons: P.A | P.UP | F.LS | F.RS, lt: 300, rt: 1023, lx: -far, ly: far, rx: 32767, ry: -32768 });
+        assert.strictEqual(r.buttons, P.A | P.UP | P.LEFT, 'the NES app\'s buttons: the left stick is the D-pad too, a stick pressed in is nothing');
+        r = g.packet(whole(0, 0, 0, 0, far, -far, 0, 0));
+        assert.strictEqual(r.state.buttons, 0, 'a stick held out is no button of the whole pad');
+        assert.strictEqual(r.buttons, P.RIGHT | P.DOWN);
+        r = g.packet(whole(0, 0, 0xffff, 2000, 0, 0, 0, 0));
+        assert(r.state.lt === loader.pad.TRIGGER_MAX && r.state.rt === loader.pad.TRIGGER_MAX && loader.pad.TRIGGER_MAX === 1023, 'a trigger is never more than all the way');
+        // a report cut short tells what it has
+        assert.deepStrictEqual(g.packet(whole(0x20, 0, 5, 6, 7, 8, 9, 10).slice(0, 8)).state, { buttons: P.B, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0 });
+        assert.deepStrictEqual(g.packet(whole(0x20, 0, 5, 6, 7, 8, 9, 10).slice(0, 14)).state, { buttons: P.B, lt: 5, rt: 6, lx: 7, ly: 8, rx: 0, ry: 0 });
+        // what a real Xbox One S pad sent (tools/pad-try.js --raw): its right trigger pulled all the way; its right
+        // stick full right, and far out another way; its left stick at each of its four ends; A with the D-pad's
+        // right. Its left trigger and its sticks pressed in were not among what it sent.
+        const sent = {
+            '20007d0e00000000ff03610c46020f05d9f8': { buttons: 0, lt: 0, rt: 1023, lx: 3169, ly: 582, rx: 1295, ry: -1831 },
+            '2000400e000000000000610c4602ff7fca03': { buttons: 0, lt: 0, rt: 0, lx: 3169, ly: 582, rx: 32767, ry: 970 },
+            '2000620e000000000000610c4602c16a5fa1': { buttons: 0, lt: 0, rt: 0, lx: 3169, ly: 582, rx: 27329, ry: -24225 },
+            '2000fa0e000000000000ff7fdbf86e051cfa': { buttons: 0, lt: 0, rt: 0, lx: 32767, ly: -1829, rx: 1390, ry: -1508 },
+            '2000a00e00000000000000802cfd6e051cfa': { buttons: 0, lt: 0, rt: 0, lx: -32768, ly: -724, rx: 1390, ry: -1508 },
+            '2000f10e00000000000014fdff7f6e051cfa': { buttons: 0, lt: 0, rt: 0, lx: -748, ly: 32767, rx: 1390, ry: -1508 },
+            '2000570e000000000000820000806e051cfa': { buttons: 0, lt: 0, rt: 0, lx: 130, ly: -32768, rx: 1390, ry: -1508 },
+            '20005e0e10080000000049062c027c020cf8': { buttons: P.A | P.RIGHT, lt: 0, rt: 0, lx: 1609, ly: 556, rx: 636, ry: -2036 },
+        };
+        Object.keys(sent).forEach((hex) => assert.deepStrictEqual(g.packet(Buffer.from(hex, 'hex')).state, sent[hex], hex));
+    });
     await check('gamepad: the Xbox button\'s report is acknowledged; a pad that says hello later is switched on again, its buttons let go', () => {
         let t = 0;
         const g = new loader.pad.Gip(XBOX_ONE_S, () => t);
@@ -273,6 +305,7 @@ function writePack(file, files) {
         t += 5000;
         const r = g.packet(hello);
         assert(r.buttons === 0 && r.send.length === 4 && r.send[0].toString('hex') === '0520040100', JSON.stringify(r));
+        assert.deepStrictEqual(r.state, { buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0 }, 'and its sticks and triggers');
         assert.deepStrictEqual(g.packet(hello), {}, 'and not again at once');
     });
     await check('gamepad: found on the USB bus as the head unit lists an Xbox One S pad; one a kernel driver has, or another device, is not', () => {
@@ -663,6 +696,24 @@ function writePack(file, files) {
                 const n = seen.length;
                 await sleep(200);
                 assert.strictEqual(seen.length, n, 'buttons after the game stopped');
+            });
+            await check('gamepad: read by a program of one\'s own, the whole pad is told whenever anything of it changes, and its buttons as the loader gets them', async () => {
+                const log2 = path.join(tmp, 'pad-whole.log'), states = [], bits = [], P = loader.pad.PAD, F = loader.pad.PAD_FULL;
+                const st = (buttons, lt, rt, lx, ly, rx, ry) => ({ buttons, lt, rt, lx, ly, rx, ry });
+                // a trigger pulled a little, then all the way; the same again; let go, with A and the right stick
+                // pressed in and out to the left; all let go
+                const steps = [whole(0, 0, 0, 200, 0, 0, 0, 0), whole(0, 0, 0, 1023, 0, 0, 0, 0), whole(0, 0, 0, 1023, 0, 0, 0, 0), whole(0x10, 0x80, 0, 0, 0, 0, -20000, 9), whole(0, 0, 0, 0, 0, 0, 0, 0)]
+                    .map((b) => b.toString('hex')).concat(['pulled']).join(',');
+                let closed = null;
+                const reader = loader.pad.open(dev, { pipe: [process.execPath, path.join(ROOT, 'test', 'fake-usbpipe.js'), log2, steps], env: process.env,
+                    onState: (s) => states.push(s), onButtons: (b) => bits.push(b), onClose: (why) => { closed = why; } });
+                try {
+                    await until('the pad at rest again', () => states.length >= 4);
+                    assert.deepStrictEqual(states, [st(0, 0, 200, 0, 0, 0, 0), st(0, 0, 1023, 0, 0, 0, 0), st(P.A | F.RS, 0, 0, 0, 0, -20000, 9), st(0, 0, 0, 0, 0, 0, 0)]);
+                    assert.deepStrictEqual(bits, [P.A, 0], 'a trigger and a stick pressed in are no button of the NES app\'s');
+                } finally { reader.close(); }
+                await until('the program let go of', () => fs.existsSync(log2) && fs.readFileSync(log2, 'utf8').split('\n').indexOf('end') >= 0);
+                assert.strictEqual(closed, null, 'let go of by its reader, it does not say it ended');
             });
             await check('gamepad: a program that cannot read the pad is not started over and over; a loader from before gamepads is asked once', async () => {
                 const said = [];

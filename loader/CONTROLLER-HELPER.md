@@ -50,6 +50,35 @@ Read-only, over SSH, on one rooted iDrive 7 unit (kernel `4.14.198-apl`), with a
   `drivers/input/joystick/xpad.c` (`xboxone_init_packets`, `xpadone_process_packet`,
   `xpadone_ack_mode_report`), not from memory. The tests hold them to that.
 
+## The whole pad, for another app
+
+The NES app wants a D-pad and a few buttons, and that is all the loader sends it. Since 0.2.1 `pad.js`
+reads the rest of an Xbox pad's report too, for a program that wants a pad with two sticks:
+`open(dev, { onState })` tells `{ buttons, lt, rt, lx, ly, rx, ry }` whenever any of it changes.
+
+- `buttons`: the bits of `PAD_FULL`. The D-pad is as it is pressed, with no stick counted into it, and
+  `LS` and `RS` are the sticks pressed in.
+- `lt`, `rt`: the triggers, 0 to 1023.
+- `lx`, `ly`, `rx`, `ry`: the sticks, -32768 to 32767. Right and up are the greater numbers.
+
+`node tools/pad-try.js --state` shows it from a pad on a PC.
+
+- **Seen from the real pad** (the PC captures below): the right trigger from 0 to 1023, the right stick
+  to 32767 one way and far out another, and the left stick at both ends of both axes. Those packets are
+  in `test/run.js`.
+- **Not seen from a pad:** the left trigger and the sticks pressed in. They are read where the kernel
+  driver reads them (`xpadone_process_packet`: bytes 6 and 7, and bits 6 and 7 of byte 5).
+- **The Xbox button is not in it.** It comes in a packet of its own, which is answered and otherwise
+  passed over.
+- **A stick at rest is not at 0.** This pad's rested one to three thousand off the middle, and a stick
+  let go sprang past the middle (below). A program that uses the numbers needs a dead zone of its own.
+- **The loader's socket is the NES app's alone** (`sockgroup.js`), and the pad is read for one
+  connection. Another app needs a tool of its own made the same way: a root service on a socket of its
+  own app's group, which starts the USB program as that app's user with the group of the pad's device
+  file. Its copy of the program should have a file name of its own: the head unit's crash handler knows
+  a tool's programs by their file names, and two tools with one name between them have not been tried.
+- **Not on a car yet.** The car ran 0.2.0. What 0.2.1 sends the NES app is the same, by the tests.
+
 ## Open, in the order to settle them
 
 1. **A real pad on a PC: done, for an Xbox One S pad.** WSL 2's kernel has no driver for the pad, so a

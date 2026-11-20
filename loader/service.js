@@ -45,7 +45,7 @@ const games = require('./games');
 const firewall = require('./nft');
 const pads = require('./pad');
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often

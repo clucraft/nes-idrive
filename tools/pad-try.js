@@ -3,8 +3,10 @@
  * A gamepad plugged into this computer, read as the NES game loader reads one on the head unit
  * (loader/pad.js and loader/nes-usbpipe): its buttons as they change, as the pad's own and as the NES pad's.
  *
- *   node tools/pad-try.js [--seconds 60] [--idle 20] [--raw]
+ *   node tools/pad-try.js [--seconds 60] [--idle 20] [--raw] [--state]
  *                                    --raw: every packet the pad sends, too
+ *                                    --state: the whole pad, too, which the NES app does not get: both sticks,
+ *                                             the triggers, the sticks pressed in (loader/pad.js, "state")
  *                                    --idle: ends once the buttons, pressed at least once, rest this long
  *
  * tools/emu.js --pad uses the same pad for the emulator's app (forLoader() below).
@@ -66,7 +68,7 @@ const forLoader = () => ({ padFind: () => { try { return findHere(); } catch (e)
 function main() {
     const args = process.argv.slice(2);
     const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] ? args[i + 1] : dflt; };
-    const SECONDS = Number(opt('--seconds', 60)), IDLE = Number(opt('--idle', 0)), RAW = args.indexOf('--raw') >= 0;
+    const SECONDS = Number(opt('--seconds', 60)), IDLE = Number(opt('--idle', 0)), RAW = args.indexOf('--raw') >= 0, STATE = args.indexOf('--state') >= 0;
     const names = (bits, table) => Object.keys(table).filter((k) => bits & table[k]).join(' ') || '-';
     const t0 = Date.now(), stamp = () => ('     ' + ((Date.now() - t0) / 1000).toFixed(2)).slice(-7) + ' s  ';
 
@@ -85,11 +87,21 @@ function main() {
     let changes = 0, changedT = 0, stop = null;
     const told = (b) => { changes++; changedT = Date.now(); console.log(stamp() + 'pad: ' + names(b, PAD) + '    NES: ' + names(toNes(b), BTN)); };
     const done = (why, code) => { console.log('pad-try: ' + why + '; the buttons changed ' + changes + ' time(s)'); process.exit(code); };
+    // the whole pad, ten times a second at most: a stick on its way tells a hundred
+    let latest = null, shown = null;
+    const whole = (s) => { latest = s; changedT = Date.now(); };
+    if (STATE) {
+        setInterval(() => {
+            if (!latest || latest === shown) return;
+            shown = latest;
+            console.log(stamp() + 'all: ' + names(shown.buttons, pads.PAD_FULL) + '    LT ' + shown.lt + '  RT ' + shown.rt + '    left ' + shown.lx + ' ' + shown.ly + '    right ' + shown.rx + ' ' + shown.ry);
+        }, 100);
+    }
     setTimeout(() => stop(), SECONDS * 1000);
-    if (IDLE > 0) setInterval(() => { if (changes && Date.now() - changedT > IDLE * 1000) stop(); }, 500);
+    if (IDLE > 0) setInterval(() => { if ((changes || shown) && Date.now() - changedT > IDLE * 1000) stop(); }, 500);
 
     if (!RAW) {
-        const reader = pads.open(dev, { pipe, env: process.env, log: (s) => console.log('         ' + s), onButtons: told, onClose: (why) => done(why, 1) });
+        const reader = pads.open(dev, { pipe, env: process.env, log: (s) => console.log('         ' + s), onButtons: told, onState: STATE ? whole : null, onClose: (why) => done(why, 1) });
         stop = () => { reader.close(); setTimeout(() => done('done', 0), 300); };
         return;
     }
@@ -111,6 +123,7 @@ function main() {
             const r = gip.packet(Buffer.from(line, 'hex'));
             if (r.send) send(r.send);
             if (r.buttons !== undefined && r.buttons !== buttons) { buttons = r.buttons; told(buttons); }
+            if (STATE && r.state) whole(r.state);
         }
     });
     child.on('close', (code, signal) => done((code === 1 ? 'the pad is gone' : 'nes-usbpipe ended (' + (signal || code) + ')') + ', ' + packets + ' packet(s) from the pad', code ? 1 : 0));
