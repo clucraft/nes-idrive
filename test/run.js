@@ -7,6 +7,8 @@
 // code (qr.js) and the NES game loader (loader/) from the app's request to a game sent over HTTP, with a
 // stand-in for the head unit's firewall program. A USB gamepad: what its packets mean (loader/pad.js), and
 // its buttons from a stand-in for the program that reads it (test/fake-usbpipe.js) through the loader to the app.
+// A game's sound: out of the emulator, through the loader to a stand-in for the program that plays it
+// (test/fake-sound.js), that program itself where it runs (Linux), and the request for the car's speakers.
 // Then the MGU Store's view of this repository: mgu-repo.json and the committed package in store/.
 // No SDK, head unit or game needed; runs on Node 8 (the head unit's) as on a current one:
 //   node test/run.js        (npm test; npm run test:node8 for Node 8)
@@ -28,7 +30,9 @@ const { qr } = require(path.join(ROOT, 'app/qr'));
 const { Phone } = require(path.join(ROOT, 'app/phone'));
 const { Pad, PAD, toNes } = require(path.join(ROOT, 'app/pad'));
 const { Tabs } = require(path.join(ROOT, 'app/tabs'));
-const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')), page: require(path.join(ROOT, 'loader/page')) };
+const { Sound } = require(path.join(ROOT, 'app/sound'));
+const { createCarAudio } = require(path.join(ROOT, 'app/caraudio'));
+const loader = { games: require(path.join(ROOT, 'loader/games')), nft: require(path.join(ROOT, 'loader/nft')), service: require(path.join(ROOT, 'loader/service')), pad: require(path.join(ROOT, 'loader/pad')), page: require(path.join(ROOT, 'loader/page')), sound: require(path.join(ROOT, 'loader/sound')) };
 
 let failed = 0;
 const check = async (name, fn) => {
@@ -62,6 +66,34 @@ function testRom() {
     const head = Buffer.alloc(16);
     Buffer.from([0x4e, 0x45, 0x53, 0x1a, 1, 1]).copy(head, 0);
     return Buffer.concat([head, prg, Buffer.alloc(8192)]);
+}
+/** A cartridge that plays one note for ever: the first square wave at 440 Hz (period 253), as loud as it goes. */
+function toneRom() {
+    const prg = Buffer.alloc(16384, 0xea), code = [
+        0x78, 0xd8, 0xa2, 0xff, 0x9a,                         // C000 SEI, CLD, LDX #$FF, TXS
+        0xa9, 0x01, 0x8d, 0x15, 0x40,                         // C005 LDA #1, STA $4015 (the first square wave on)
+        0xa9, 0xbf, 0x8d, 0x00, 0x40,                         // C00A half duty, volume 15, not counted down
+        0xa9, 0x08, 0x8d, 0x01, 0x40,                         // C00F no sweep
+        0xa9, 0xfd, 0x8d, 0x02, 0x40,                         // C014 period 253: 1789773 / (16 * 254) = 440.4 Hz
+        0xa9, 0x00, 0x8d, 0x03, 0x40,                         // C019
+        0x4c, 0x1e, 0xc0,                                     // C01E JMP C01E
+        0x40,                                                 // C021 RTI
+    ];
+    Buffer.from(code).copy(prg, 0);
+    [0x21, 0xc0, 0x00, 0xc0, 0x21, 0xc0].forEach((b, i) => { prg[0x3ffa + i] = b; });       // NMI, reset, IRQ
+    const head = Buffer.alloc(16);
+    Buffer.from([0x4e, 0x45, 0x53, 0x1a, 1, 1]).copy(head, 0);
+    return Buffer.concat([head, prg, Buffer.alloc(8192)]);
+}
+/** of sound as signed 16-bit left and right: { frames, peak, cycles: times the left goes from below its middle to above } */
+function heard(bytes) {
+    const b = Buffer.from(bytes), n = b.length >> 2;
+    let lo = 0, hi = 0;
+    for (let i = 0; i < n; i++) { const v = b.readInt16LE(i * 4); if (v < lo) lo = v; if (v > hi) hi = v; }
+    const mid = (lo + hi) / 2;
+    let cycles = 0, below = true;
+    for (let i = 0; i < n; i++) { const v = b.readInt16LE(i * 4); if (below && v > mid + (hi - mid) / 4) { cycles++; below = false; } else if (v < mid - (mid - lo) / 4) below = true; }
+    return { frames: n, peak: Math.max(-lo, hi), swing: hi - lo, cycles };
 }
 /** the picture's one colour as [r, g, b], or null when it has more than one */
 function colour(f) {
@@ -134,6 +166,23 @@ function writePack(file, files) {
     await check('core: what is no cartridge is refused; the next game still loads', () => {
         assert(!nes.load(Buffer.from('not a game')) && !nes.load(Buffer.alloc(30000, 7)));
         assert(nes.load(rom) && colour(frames(nes, 20)), 'no picture after loading again');
+    });
+    await check('core: a game\'s sound comes with each frame: 48000 samples a second, left and right, a 440 Hz note as 440 Hz', async () => {
+        const tone = new Nes({ wasm: path.join(ROOT, 'app/nes.wasm'), log });
+        await tone.compile();
+        assert.strictEqual(tone.audio(), null, 'sound without a game');
+        assert(tone.load(toneRom()), 'the cartridge with the note did not load');
+        assert.strictEqual(tone.sampleRate, 48000);
+        const parts = [];
+        for (let i = 0; i < 90; i++) {
+            tone.run();
+            const a = tone.audio();
+            assert(a && a.bytes.length === a.frames * 4 && Math.abs(a.frames - 48000 / tone.fps) < 3, 'frame ' + i + ': ' + (a && a.frames) + ' samples');
+            if (i >= 30) parts.push(Buffer.from(a.bytes));       // (a copy: the next frame's sound takes its place)
+        }
+        const h = heard(Buffer.concat(parts)), seconds = h.frames / 48000;
+        assert(h.swing > 2000, 'the note is not in the sound: ' + JSON.stringify(h));
+        assert(Math.abs(h.cycles / seconds - 440.4) < 3, (h.cycles / seconds).toFixed(1) + ' Hz');
     });
     await check('core: the memory never grows (12 MiB from the start: Node 8 copies on growth)', () => {
         for (let i = 0; i < 20; i++) { assert(nes.load(rom)); frames(nes, 3); nes.saveState(); }
@@ -996,6 +1045,183 @@ function writePack(file, files) {
         }
     }
 
+    /* ---------- a game's sound: the app, the loader, the program that plays it, and the car's speakers ---------- */
+    {
+        const sock = (name) => (process.platform === 'win32' ? '\\\\.\\pipe\\nes-test-' + process.pid + '-' + name : path.join(tmp, name + '.sock'));
+        const soundLog = path.join(tmp, 'sound.log'), wrote = () => (fs.existsSync(soundLog) ? fs.readFileSync(soundLog, 'utf8').split('\n').filter(Boolean) : []);
+        const pcm = () => (fs.existsSync(soundLog + '.pcm') ? fs.readFileSync(soundLog + '.pcm') : Buffer.alloc(0));
+        const said = [];
+        const service = loader.service.createService({ listen: sock('sound'), nft: null, asSelf: true, exit: false, idleMs: 1e9,
+            soundPipe: [process.execPath, path.join(ROOT, 'test', 'fake-sound.js'), soundLog], soundEnv: process.env, soundAgainMs: 30, log: (s) => said.push(s) });
+        const states = [];
+        const sound = new Sound({ socket: sock('sound'), log, onChange: (s) => states.push(s.step + (s.player ? ' ' + s.player : '')) });
+        try {
+            await check('sound: the app asks while a game runs; what it sends then reaches the program that plays it, whole and in order, and what that program says comes back', async () => {
+                assert.strictEqual(sound.write(Buffer.alloc(400, 1)), false, 'sound taken before anybody asked for it');
+                sound.start(48000);
+                await until('the loader\'s yes', () => sound.ready);
+                assert.strictEqual(service.status().sound.on, true);
+                const sent = [];
+                for (let i = 0; i < 20; i++) { const b = Buffer.alloc(3196, i + 1); b.writeUInt32LE(i, 0); sent.push(b); assert(sound.write(b), 'part ' + i + ' not sent'); await sleep(5); }
+                const all = Buffer.concat(sent);
+                await until('all of it', () => pcm().length >= all.length);
+                assert(pcm().equals(all), 'what was played is not what was sent');
+                await until('playing', () => sound.state.player === 'playing');
+                assert.deepStrictEqual(wrote()[0], 'args ' + loader.sound.DEVICE + ' 48000', 'what the program is started with');
+                assert(states.indexOf('on waiting') >= 0 && states[states.length - 1] === 'on playing', states.join(' | '));
+                assert(said.some((l) => /sound: the app sends a game's, 48000 samples a second/.test(l)) && said.some((l) => l === 'sound: playing'), said.join(' | '));
+                assert.strictEqual(service.status().page.open, false, 'a sound opens no page and no port');
+                // the lines of other connections are still lines
+                const other = new Phone({ socket: sock('sound'), log });
+                other.open();
+                await until('an answer to another connection', () => other.state.step !== 'off' && other.state.step !== 'asking');
+                other.close();
+            });
+            await check('sound: when the game stops the program\'s input ends and it goes; asked again, it plays again; far too much at once is not sent', async () => {
+                sound.stop();
+                await until('the program gone', () => wrote().indexOf('end') >= 0 && service.status().sound.on === false);
+                assert.strictEqual(sound.state.step, 'off');
+                assert(said.some((l) => /sound: no longer played: the app left/.test(l)), said.join(' | '));
+                sound.start(44100);
+                await until('the loader\'s yes again', () => sound.ready && wrote().filter((l) => /^args/.test(l)).length === 2);
+                assert.strictEqual(wrote().filter((l) => /^args/.test(l))[1], 'args ' + loader.sound.DEVICE + ' 44100');
+                let refused = 0;
+                for (let i = 0; i < 64; i++) if (!sound.write(Buffer.alloc(65536))) refused++;      // 4 MiB in one go: 20 s of sound
+                assert(refused > 0, 'everything was taken: the sound would run late');
+                sound.stop();
+            });
+            await check('sound: a program that cannot play is not started over and over, and the app is told why; without one, or with a loader from before, the app is told once', async () => {
+                const log2 = [];
+                const broken = loader.service.createService({ listen: sock('sound-broken'), nft: null, asSelf: true, exit: false, idleMs: 1e9, soundAgainMs: 20, log: (s) => log2.push(s),
+                    soundPipe: [process.execPath, '-e', 'console.log(JSON.stringify({ ev: "error", error: "dlopen libasound.so.2: no such file" })); process.exit(3)'], soundEnv: process.env });
+                const s = new Sound({ socket: sock('sound-broken'), log });
+                try {
+                    s.start(48000);
+                    await until('giving up', () => s.state.player === 'error');
+                    assert(/libasound/.test(s.state.error), s.state.error);
+                    assert(log2.some((l) => /not tried again/.test(l)), log2.join(' | '));
+                } finally { s.stop(); broken.stop(0); }
+                const none = loader.service.createService({ listen: sock('sound-none'), nft: null, asSelf: true, exit: false, idleMs: 1e9, soundPipe: null, log: () => {} });
+                const t = new Sound({ socket: sock('sound-none'), log });
+                try {
+                    t.start(48000);
+                    await until('its answer', () => t.given === true);
+                    assert(t.state.step === 'failed' && /No sound on this computer/.test(t.state.error), JSON.stringify(t.state));
+                    assert.strictEqual(t.write(Buffer.alloc(64)), false);
+                } finally { t.stop(); none.stop(0); }
+                let asked = 0;
+                const old = net.createServer((c) => { asked++; c.on('error', () => {}); c.on('data', () => c.write('{"ok":false,"error":"unknown: sound"}\n')); });
+                await new Promise((r) => old.listen(sock('sound-old'), r));
+                const q = new Sound({ socket: sock('sound-old'), log });
+                try {
+                    q.start(48000);
+                    await until('its answer', () => q.given === true);
+                    await sleep(150);
+                    assert(asked === 1 && /update it in the MGU Store/.test(q.state.error), asked + ' ' + q.state.error);
+                } finally { q.stop(); old.close(); }
+            });
+        } finally {
+            sound.stop();
+            service.stop(0);
+        }
+        await check('sound: the program that plays runs as nobody in the head unit\'s sound group, by the head unit\'s own numbers; without that group there is no sound', () => {
+            const etc = path.join(tmp, 'etc');
+            fs.mkdirSync(etc);
+            fs.writeFileSync(path.join(etc, 'passwd'), 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n');
+            fs.writeFileSync(path.join(etc, 'group'), 'root:x:0:\nmgu_usb:x:912:\nmgu_alsa:x:905:ent_audiomanager,nobody\n');
+            assert.deepStrictEqual(loader.sound.ids(etc), { uid: 65534, gid: 905 });
+            fs.writeFileSync(path.join(etc, 'group'), 'root:x:0:\nmgu_alsa_x:x:906:\n');
+            assert.throws(() => loader.sound.ids(etc), /no group "mgu_alsa"/);
+            assert.throws(() => loader.sound.ids(path.join(tmp, 'no-etc')), /no user "nobody"/);
+        });
+        await check('sound: the car\'s speakers are asked for as other apps ask: source 287 made available and connected to the front speakers, and only this app\'s connection ended', async () => {
+            const calls = [], list = [{ mainConnectionID: 7, sourceID: 12, sinkID: 1024 }];
+            let next = 40;
+            const signals = {
+                proxy: async (iface) => ({ iface }),
+                call: async (p, method, args) => {
+                    calls.push(method + ' ' + JSON.stringify(args));
+                    if (method === 'getListMainConnections') return { listConnections: list.slice() };
+                    if (method === 'connect') { list.push({ mainConnectionID: ++next, sourceID: args.sourceID, sinkID: args.sinkID }); return { amError: 'E_OK', mainConnectionID: next }; }
+                    if (method === 'disconnect') { const i = list.findIndex((c) => c.mainConnectionID === args.mainConnectionID); if (i >= 0) list.splice(i, 1); return { amError: 'E_OK' }; }
+                    return {};
+                },
+            };
+            const file = path.join(tmp, 'speakers.json');
+            const audio = createCarAudio(signals, log, file, { retryMs: 20 });
+            audio.want(true);
+            await until('connected', () => audio.state().connected);
+            assert.deepStrictEqual(calls.filter((c) => !/^getList/.test(c)), [
+                'hookSourceAvailablityStatusChange {"sourceID":287,"availability":{"availability":"A_AVAILABLE","availabilityReason":0}}',
+                'connect {"sourceID":287,"sinkID":1024}']);
+            assert.deepStrictEqual(list.map((c) => c.mainConnectionID), [7, 41]);
+            audio.want(true);                                       // (asked again and again: nothing more)
+            await sleep(60);
+            assert.strictEqual(calls.filter((c) => /^connect/.test(c)).length, 1);
+            calls.length = 0;
+            audio.want(false);
+            await until('hung up', () => !audio.state().connected);
+            assert.deepStrictEqual(calls.filter((c) => !/^getList/.test(c)), ['disconnect {"mainConnectionID":41}',
+                'hookSourceAvailablityStatusChange {"sourceID":287,"availability":{"availability":"A_UNAVAILABLE","availabilityReason":0}}']);
+            assert.deepStrictEqual(list.map((c) => c.mainConnectionID), [7], 'another source\'s connection was touched');
+            assert(!fs.existsSync(file), 'the connection\'s number is kept though it is gone');
+        });
+        // the program itself, where it can run: Linux for the head unit's processor. Its loader is where the head
+        // unit has it, which is not where a PC's Linux has it, so it is started through the PC's.
+        const ld = '/lib64/ld-linux-x86-64.so.2', player = path.join(ROOT, 'loader', 'nes-sound');
+        if (process.platform !== 'linux' || process.arch !== 'x64' || !fs.existsSync(ld)) console.log('skip sound: the program that plays it, loader/nes-sound, run on a tone (it is a Linux program for x86-64)');
+        else {
+            const run = (args, env, feed) => new Promise((resolve) => {
+                const { spawn } = require('child_process');
+                const c = spawn(ld, [player].concat(args), { env: Object.assign({}, process.env, env), stdio: ['pipe', 'pipe', 'pipe'] });
+                let out = '';
+                c.stdout.on('data', (d) => { out += d; });
+                c.stdin.on('error', () => {});
+                c.on('exit', (code) => resolve({ code, events: out.split('\n').filter(Boolean).map((l) => JSON.parse(l)) }));
+                feed(c.stdin);
+            });
+            /** seconds of a note at rate, handed over as a game hands its sound over: in pieces, as much as the clock says is due */
+            const note = (stdin, rate, hz, seconds) => new Promise((done) => {
+                const t0 = Date.now(), total = Math.round(seconds * rate);
+                let n = 0;
+                const t = setInterval(() => {
+                    const due = Math.min(total, Math.round((Date.now() - t0) * rate / 1000)) - n;
+                    if (due > 0) {
+                        const b = Buffer.alloc(due * 4);
+                        for (let k = 0; k < due; k++, n++) { const v = Math.round(9000 * Math.sin(2 * Math.PI * hz * n / rate)); b.writeInt16LE(v, k * 4); b.writeInt16LE(-v, k * 4 + 2); }
+                        stdin.write(b);
+                    }
+                    if (n >= total) { clearInterval(t); setTimeout(() => { stdin.end(); done(); }, 150); }
+                }, 8);
+            });
+            await check('sound: the program plays a note at the device\'s 48000 samples a second as the note it is, from a game\'s 48000 and from 44100, and ends with its input', async () => {
+                for (const rate of [48000, 44100]) {
+                    const file = path.join(tmp, 'played-' + rate + '.raw');
+                    // (as root, as this suite also runs, it plays only when told that it may: the loader never tells it)
+                    const r = await run(['a-device', String(rate)], { NES_SOUND_OUT: 'file:' + file, NES_SOUND_AS_ROOT: '1' }, (stdin) => note(stdin, rate, 440, 1.5));
+                    assert.strictEqual(r.code, 0, JSON.stringify(r.events));
+                    assert(r.events.some((e) => e.ev === 'open' && e.device === 'a-device' && e.rate === rate) && r.events.some((e) => e.ev === 'playing'), JSON.stringify(r.events));
+                    const b = fs.readFileSync(file), h = heard(b);
+                    // (what is not silence: the note starts once 40 ms of it wait, and silence follows it until the input ends)
+                    let first = 0, end = h.frames;
+                    while (first < h.frames && Math.abs(b.readInt16LE(first * 4)) < 200) first++;
+                    while (end > first && Math.abs(b.readInt16LE((end - 1) * 4)) < 200) end--;
+                    const loud = heard(b.slice(first * 4, end * 4)), seconds = loud.frames / 48000;
+                    assert(seconds > 1.2 && seconds < 1.7, rate + ': ' + seconds.toFixed(2) + ' s of the note');
+                    assert(Math.abs(loud.cycles / seconds - 440) < 6, rate + ': ' + (loud.cycles / seconds).toFixed(1) + ' Hz');
+                    assert(loud.peak > 8000 && loud.peak <= 9001, rate + ': peak ' + loud.peak);
+                    for (let i = first; i < h.frames; i += 97) assert(Math.abs(b.readInt16LE(i * 4) + b.readInt16LE(i * 4 + 2)) <= 2, 'left and right are not what was sent');
+                }
+            });
+            await check('sound: the program reaches the C library\'s own loader of libraries (it has no sound library on a PC, and says so), and does not run as root', async () => {
+                const r = await run(['plug:smartx:CarLifeMedia_CF_48_STEREO', '48000'], { NES_SOUND_OUT: '' }, (stdin) => stdin.end());
+                if (process.getuid() === 0) assert(r.code === 2 && /not as root/.test(r.events[0].error), JSON.stringify(r));
+                else if (r.events.some((e) => e.ev === 'open')) console.log('     (this PC has a sound library and that device: played to it)');
+                else assert(r.events.length >= 1 && /libasound\.so\.2|snd_pcm_open/.test(r.events[0].error), JSON.stringify(r));
+            });
+        }
+    }
+
     /* ---------- the MGU Store: mgu-repo.json and store/ (the Store's docs/PUBLISHING.md, "Repo tree") ---------- */
     const json = (rel) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
     const SEMVER = /^\d+\.\d+\.\d+$/, relPath = (p) => typeof p === 'string' && !!p && !path.isAbsolute(p) && p.split('/').indexOf('..') < 0;
@@ -1088,6 +1314,12 @@ function writePack(file, files) {
         assert.strictEqual(require(path.join(ROOT, 'loader/games')).APP, spec.id, 'the loader looks for another app');
         // the program that reads a gamepad: for the head unit's processor, needing no library of the head unit's
         // (tools/build-usbpipe.js builds it from loader/src/nes-usbpipe/main.go)
+        // the program that plays a game's sound: for the head unit's processor, started by the head unit's own
+        // loader of programs and asking for no version of a C library function (tools/build-sound.js builds it so)
+        const asks = require(path.join(ROOT, 'tools/build-sound')).asks(path.join(ROOT, tool.path, 'nes-sound'));
+        assert(c.files.some((f) => f.path === 'nes-sound' && f.mode === '0755') && c.files.some((f) => f.path === 'sound.js'), 'nes-sound and sound.js are installed');
+        assert.deepStrictEqual([asks.loader, asks.versions], ['/lib/ld-linux-x86-64.so.2', []], 'nes-sound: build it with tools/build-sound.js');
+        assert(asks.needs.every((n) => ['libc.so.6', 'libdl.so.2', 'libpthread.so.0'].indexOf(n) >= 0), 'nes-sound needs ' + asks.needs.join(', '));
         const pipe = fs.readFileSync(path.join(ROOT, tool.path, 'nes-usbpipe'));
         assert(c.files.some((f) => f.path === 'nes-usbpipe' && f.mode === '0755'), 'nes-usbpipe is installed as a program');
         assert(pipe.slice(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) && pipe[4] === 2 && pipe[5] === 1 && pipe.readUInt16LE(16) === 2 && pipe.readUInt16LE(18) === 0x3e, 'nes-usbpipe is a 64-bit x86 Linux program');
@@ -1121,6 +1353,11 @@ function writePack(file, files) {
         assert(spec.screens[0].settings !== true && spec.settings.length > 0, 'the settings are not rows of the menu: the kit makes the HMI\'s own screen of them');
         // every row of the menu is answered, and the four touch buttons have a name on the tabs
         spec.screens[0].items.filter((it) => it[0] === 'button').forEach((it) => assert(main.indexOf('ui.onClick(\'' + it[1] + '\'') >= 0, it[1] + ' does nothing'));
+        // the sound: the two interfaces of the head unit's audio manager, each only if the head unit has it, and a setting
+        ['org.genivi.am.commandinterface.CommandControl', 'org.genivi.am.routinginterface.RoutingControlObserver'].forEach((i) => {
+            assert(spec.signals[i] && spec.signals[i]._optional && spec.signals[i]._instances === '1' && spec.signals[i]._methods.length, i + ' is not asked for as an option');
+        });
+        assert(spec.settings.some((s) => s.key === 'sound' && s.type === 'bool' && s.default === true), 'no setting for the sound');
         const bar = spec.screens.find((s) => s.name === 'GAME').buttons.map((b) => b[0]);
         assert.deepStrictEqual(bar, ['BTN_SELECT', 'BTN_START', 'BTN_B', 'BTN_A']);
         bar.forEach((b) => assert(new RegExp(b + ': \'').test(main), b + ' has no name on the tabs'));

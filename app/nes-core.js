@@ -188,6 +188,16 @@ class Nes {
         const w = this.x.mgu_frame_w(), h = this.x.mgu_frame_h(), p = this.x.mgu_frame_ptr();
         return p && w && h ? { px: this.bytes(p, w * h * 4), w, h } : null;
     }
+    /**
+     * The sound of the frame just run: { bytes: signed 16-bit little-endian, left and right (a view into the
+     * core's memory, valid until the next call into it), frames }, or null. sampleRate: its samples a second.
+     */
+    audio() {
+        if (!this.loaded) return null;
+        const n = this.x.mgu_audio_frames(), p = this.x.mgu_audio_ptr();
+        return p && n ? { bytes: this.bytes(p, n * 4), frames: n } : null;
+    }
+    get sampleRate() { return this.loaded ? this.guard(() => this.x.mgu_sample_rate(), 0) : 0; }
     /** the console's reset button */
     reset() { if (this.loaded) this.guard(() => this.x.mgu_reset()); }
 

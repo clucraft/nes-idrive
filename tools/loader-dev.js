@@ -31,7 +31,7 @@ function start(opts) {
     if (!fs.existsSync(link)) fs.symlinkSync(data, link, 'junction');
     if (process.platform !== 'win32') { try { fs.unlinkSync(socket); } catch (e) { /* none */ } }
     const { createService } = require(path.join(ROOT, 'loader', 'service'));
-    const service = createService(Object.assign({ listen: socket, oapDir: oap, interfaces: ['*'], nft: null, asSelf: true, exit: false, idleMs: 1e12, log }, (opts && opts.service) || {}));
+    const service = createService(Object.assign({ listen: socket, oapDir: oap, interfaces: ['*'], nft: null, asSelf: true, exit: false, idleMs: 1e12, soundPipe: null, log }, (opts && opts.service) || {}));
     const stop = () => {
         try { service.stop(0); } catch (e) { /* stopped */ }
         // the link first, as a link: never what it points to

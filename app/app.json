@@ -1,8 +1,8 @@
 {
   "id": "clucraft_nes",
   "title": "NES",
-  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. A short main menu; the list of games, Add games and the settings as tabs on one drawn screen, steered by the controller, a USB gamepad or four touch buttons; the game pixel for pixel on the whole screen; BACK returns to the menu and saves. No sound",
-  "version": "0.5.0",
+  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. A short main menu; the list of games, Add games and the settings as tabs on one drawn screen, steered by the controller, a USB gamepad or four touch buttons; the game pixel for pixel on the whole screen; BACK returns to the menu and saves. Sound on the car's speakers, with the NES game loader (it takes the place of the radio while a game runs; a setting switches it off)",
+  "version": "0.6.0",
   "vendor": "clucraft",
   "loggingId": "OAA6",
   "maxDiskUsage": 104857600,
@@ -13,6 +13,22 @@
     },
     "de.bmw.infotainment.controlelements.FrontCCU": {
       "statusRotaryEncoderState": "rs"
+    },
+    "org.genivi.am.commandinterface.CommandControl": {
+      "_instances": "1",
+      "_methods": [
+        "connect",
+        "disconnect",
+        "getListMainConnections"
+      ],
+      "_optional": "the sound on the car's speakers"
+    },
+    "org.genivi.am.routinginterface.RoutingControlObserver": {
+      "_instances": "1",
+      "_methods": [
+        "hookSourceAvailablityStatusChange"
+      ],
+      "_optional": "the sound on the car's speakers"
     }
   },
   "config": {
@@ -177,6 +193,12 @@
       "label": "USB gamepad (Xbox pad on a cable; needs the NES game loader)",
       "type": "bool",
       "default": false
+    },
+    {
+      "key": "sound",
+      "label": "Sound on the car's speakers (needs the NES game loader; in place of the radio)",
+      "type": "bool",
+      "default": true
     },
     {
       "key": "joinedWifi",

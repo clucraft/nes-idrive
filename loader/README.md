@@ -4,9 +4,9 @@ A small service for the head unit that lets the [NES app](../README.md) take gam
 
 It exists because an app cannot do this on its own: the head unit's firewall drops every connection to an app. The loader is the part that may open a port. It is optional; without it the app works as before, and games come from a USB stick or over SSH.
 
-It also reads a **USB gamepad** for the app, which an app cannot do either: [A USB gamepad](#a-usb-gamepad), below.
+It also reads a **USB gamepad** for the app, and plays a **game's sound**, neither of which an app can do: [A USB gamepad](#a-usb-gamepad) and [A game's sound](#a-games-sound), below.
 
-> **Tried on one car, in part** (2026-11-19 and 20). There the MGU Store installed the loader, the NES app reached it, and an Xbox One S pad on a cable worked as the gamepad. Games from a phone got as far as the page with 0.2.2: a phone on the home Wi-Fi the car had joined opened it, so the phone got through the head unit's firewall there (by the loader's rule, it is taken: the journal was not read). The game it sent was not saved ("the car could not save it (EACCES)"): the page ran as the wrong user, outside a folder the right one cannot enter from outside either. 0.2.3 mends both and saves a game in a copy of that car's folders on a PC; it has not been on a car yet. The car's own Wi-Fi is untried.
+> **Tried on one car, in part** (2026-11-19 and 20). There the MGU Store installed the loader, the NES app reached it, and an Xbox One S pad on a cable worked as the gamepad. Games from a phone got as far as the page with 0.2.2: a phone on the home Wi-Fi the car had joined opened it, so the phone got through the head unit's firewall there (by the loader's rule, it is taken: the journal was not read). The game it sent was not saved ("the car could not save it (EACCES)"): the page ran as the wrong user, outside a folder the right one cannot enter from outside either. 0.2.3 mends both and saves a game in a copy of that car's folders on a PC, and the car's owner reports that a game sent from a phone is saved and plays now (which version was on the car was not read). The car's own Wi-Fi is untried. A game's sound (0.3.0) has not been on a car.
 
 ## Using it
 
@@ -24,6 +24,7 @@ The page can also take a game out again. It works while the screen with the code
 | `service.js` | root | answers the NES app on `/run/clucraft-nes-loader.sock`; puts the page's port into the firewall and takes it out; starts the page; starts `nes-usbpipe` and tells the app the gamepad's buttons |
 | `page.js` | the NES app's own user | listens on the car Wi-Fi; checks and writes the games |
 | `nes-usbpipe` | the NES app's own user, in the group of the head unit's USB devices | passes a gamepad's USB packets on, while the app's drawn screen shows |
+| `nes-sound` | `nobody`, in the group of the head unit's sound devices | plays a game's sound into the head unit's sound mixer, while the game runs |
 
 - **Started by the app, never at boot.** systemd starts the service when the NES app connects to the socket. Two minutes after the app is gone it ends. Nothing of it runs while the app's screen was never opened.
 - **Only the NES app can ask.** The socket belongs to the NES app's own group (`sockgroup.js`), not to the group every app is in.
@@ -54,6 +55,26 @@ What has run, on a PC: the meaning of the packets against the kernel driver's, t
 
 What has run, on a car (one, on 2026-11-19): with the app and the loader installed by the MGU Store and the setting on, the same pad worked as the gamepad. So the Store installs `nes-usbpipe` as a program the head unit runs, and a user that is not root may open the pad there, in the USB devices' group. Which buttons were tried, and the loader's journal of it, were not kept. That was the loader 0.2.0, which ran `nes-usbpipe` as the owner of the app's folder: on a car the Store's user, as was found later. Since 0.2.3 it is the app's own user, in the same group. Later versions read the same for the NES app; of them 0.2.2 has been on that car, for games from a phone, and the pad was not tried again. What is still open is in the [main README](../README.md), "What still needs a car".
 
+## A game's sound
+
+An app has no sound device. With the app's setting **Sound on the car's speakers** on (it is, at first), while a game runs:
+
+1. The app opens a second connection to the loader's socket and asks: `{"cmd":"sound","rate":48000}`. After the loader's answer that connection carries nothing but the game's sound, as the emulator makes it: signed 16-bit samples, left and right.
+2. The loader starts `nes-sound` and hands it that sound. `nes-sound` plays it into `plug:smartx:CarLifeMedia_CF_48_STEREO`: the input of the head unit's own sound mixer (SmartXbar) for CarLife, a phone system no phone outside China uses.
+3. The app asks the head unit's audio manager to connect that input, its source 287, to the front speakers (`app/caraudio.js`). Until it does, the mixer takes nothing and `nes-sound` says it waits.
+4. When the game stops, the app closes the connection; `nes-sound` closes the device and ends, and the app has the audio manager disconnect what it connected.
+
+- **Not root.** `nes-sound` runs as `nobody`, in the group the head unit gives its sound devices to (`mgu_alsa`), and refuses to run as root. A head unit without that group gets no sound; the app says why beside the game.
+- **No port, no firewall rule,** and nothing plays while no game runs.
+- **The speakers play one such source at a time:** the game's sound takes the place of the radio or a phone's music, until the game stops. What the head unit plays then is its own decision.
+- **Late sound is dropped, not played late.** The loader and `nes-sound` keep a third and a half of a second at most; `nes-sound` plays about 40 ms behind what it is sent, a shade slower or faster as needed, because the game's clock and the sound device's are two.
+- **A player that cannot play is left alone** after five tries in a row, until the next game.
+- **`nes-sound` is a program, not a script:** Node.js has no way to the head unit's sound library. It is built from `src/nes-sound/main.go` by `npm run build:sound` on any computer, without a C compiler, and is committed here as the Store installs it. It needs the head unit's C library and, to play, its `libasound.so.2`, which it loads when it starts.
+
+Whose way this is: the route to the speakers (source 287 to the front speakers) is Moonride's (JustAnotherPU), and aurelmarius' TVH Player and M850i-amn's IPTV use it; `nes-sound` opens and writes the device as their player, `tvh-player`, does. [clucraft/plex-idrive](https://github.com/clucraft/plex-idrive) carries that player and that request, and is heard on the one car this loader has been on. `app/caraudio.js` is M850i-amn's file (MIT; the app's `NOTICE`); `nes-sound` is this project's own program.
+
+What has run, on a PC: the sound out of the emulator, a note as the note it is; the app's request and the sound through the loader to a stand-in for `nes-sound`; the request for the speakers against a stand-in for the audio manager; and `nes-sound` itself on Linux, playing a note into a file at the device's pace, from 48000 and from 44100 samples a second, and reaching the C library's loader of libraries. What has not run anywhere: `nes-sound` with the head unit's sound library and mixer. So on a car everything about the sound is still to show.
+
 ## Removing it
 
 Remove **NES game loader** in the Store. That takes out its units, its folder `/var/opt/clucraft-nes-loader` and any firewall rule of its own. Games already sent stay with the app.
@@ -69,6 +90,8 @@ nft.js           the firewall rules
 sockgroup.js     the socket for the NES app alone
 pad.js           a USB gamepad: finding it, switching it on, what its packets mean
 nes-usbpipe          the program that passes its packets on (built from src/nes-usbpipe/main.go)
+sound.js         a game's sound: whom the program that plays it runs as, starting and ending it
+nes-sound            the program that plays it (built from src/nes-sound/main.go)
 check.js         the Store's check: the service answers
 cleanup.js       the firewall as it was (after a stop, before a removal)
 systemd/         clucraft-nes-loader.socket, clucraft-nes-loader.service
@@ -76,6 +99,6 @@ systemd/         clucraft-nes-loader.socket, clucraft-nes-loader.service
 
 On a PC the same files run with the emulator, without root and without a firewall (`tools/loader-dev.js`, started by `npm run emu`): see "Try it in the emulator" in the [main README](../README.md).
 
-GPL-2.0-or-later, as the rest of the repository (`LICENSE`).
+GPL-2.0-or-later, as the rest of the repository (`LICENSE`). `nes-sound` has one library in it beside Go's own, [purego](https://github.com/ebitengine/purego) (Apache-2.0, `LICENSE.purego`), through which it calls the head unit's sound library; with it the program as a whole is under the GPL's version 3 or later.
 
 The way it works, a service the app starts through a socket, a page behind a QR code, and a firewall rule for as long as the page is open, is how [aurelmarius/bmw-apps](https://github.com/aurelmarius/bmw-apps) signs in its TV and AirPlay apps, on cars. That showed it can be done on this head unit. The code here is its own.

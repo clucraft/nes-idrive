@@ -13,6 +13,7 @@
     "build:store": "node tools/build-store.js",
     "build:games": "sh games/build.sh",
     "build:usbpipe": "node tools/build-usbpipe.js",
+    "build:sound": "node tools/build-sound.js",
     "build:core": "bash core/build.sh"
   }
 }

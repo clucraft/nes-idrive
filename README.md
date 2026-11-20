@@ -23,7 +23,7 @@
   ![Snake, one of the two games that come with the app, in the emulator](docs/emulator-snake.png)
 
 - Your own `.nes` files (iNES format) get to the app in four ways:
-  - **From a phone.** *Add games from a phone* in the menu, the tab *Add games* of the games screen, shows a QR code. The phone, on the same Wi-Fi as the car, opens the page behind it and you pick the files. That Wi-Fi is the one the car has joined (your home Wi-Fi, the phone's own hotspot) while the setting *Add games over the Wi-Fi the car is on* is on, as it is at first; switched off, or with the car on no Wi-Fi, it is the car's own (wireless CarPlay, the car's hotspot). This needs the [NES game loader](loader), a small optional service installed beside the app. *On one car (2026-11-20, the app 0.4.2 and the loader 0.2.2) a phone on the car's home Wi-Fi opened that page, and the game it sent was answered with "the car could not save it (EACCES)". The loader 0.2.3 saves a game in a copy of that car's folders on a PC; it has not been on a car yet.*
+  - **From a phone.** *Add games from a phone* in the menu, the tab *Add games* of the games screen, shows a QR code. The phone, on the same Wi-Fi as the car, opens the page behind it and you pick the files. That Wi-Fi is the one the car has joined (your home Wi-Fi, the phone's own hotspot) while the setting *Add games over the Wi-Fi the car is on* is on, as it is at first; switched off, or with the car on no Wi-Fi, it is the car's own (wireless CarPlay, the car's hotspot). This needs the [NES game loader](loader), a small optional service installed beside the app. *On one car this works: its owner reports (2026-11-20) that a game sent from a phone on the car's home Wi-Fi was saved and played. With the loader 0.2.2 the game had been answered with "the car could not save it (EACCES)"; 0.2.3 mended that. Which versions were on the car for the report was not read from it.*
 
     ![The Add games page as it was before the tabs, on the whole screen: a QR code, the three steps, and what came in](docs/add-games-car.png)
 
@@ -78,6 +78,15 @@ An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, 
 - **Other pads:** another make's pad for the Xbox One is read the same way when it speaks that console's protocol. An Xbox 360 pad, a PlayStation pad and a plain USB pad are not read yet, and neither is a wireless pad's USB dongle.
 - **Tried on one car:** an Xbox One S pad works there (2026-11-19). On a PC the same pad was read first, every button and the left stick, and played *Pad Test* in the emulator through the loader. [`loader/README.md`](loader/README.md) says what has run and what has not.
 
+### Sound
+
+A game's sound plays on the car's speakers, with the [NES game loader](loader) 0.3.0 or later installed. *New in 0.6.0, and not heard on a car yet.*
+
+- **It takes the place of what the head unit played before,** the radio or a phone's music, for as long as a game runs: the head unit plays one such source at a time. The setting *Sound on the car's speakers* switches it off, and the radio then plays on beside a silent game.
+- **Its volume is the car's.**
+- **How:** the app has no sound device. The loader plays the game's samples into an input of the head unit's own sound mixer that no phone outside China uses, and the app asks the head unit's audio manager to put that input on the speakers. Other apps for this head unit are heard that way; [`loader/README.md`](loader/README.md#a-games-sound) has the details and says whose way it is.
+- **The panel beside the game** says where the sound is: on the speakers, waiting for them, or why there is none.
+
 ### Saves
 
 - **Leaving the game saves it:** BACK, MENU, a popup or call, driving off, the app closing. It is also saved every 30 seconds while you play.
@@ -97,6 +106,7 @@ An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, 
 | Controller turn left | Start, Select, B, A, Nothing |
 | Touch buttons beside the picture | on, off |
 | USB gamepad (Xbox pad on a cable; needs the NES game loader) | off, on |
+| Sound on the car's speakers (needs the NES game loader; in place of the radio) | on, off |
 | Add games over the Wi-Fi the car is on (home, phone hotspot) | on, off |
 | Picture edges | Hidden, as on a TV (224 lines); Shown (240 lines) |
 | Less sprite flicker (no 8-sprite limit) | off, on |
@@ -115,8 +125,10 @@ With *Parked only* on, the game stops and saves once the car moves faster than 3
      ├─ app/library.js    the games (the app's packs, the data folder, a USB stick) and the saves
      ├─ app/controls.js   iDrive controller and touch buttons -> the NES pad
      ├─ app/pad.js        a USB gamepad's buttons, from the NES game loader -> the NES pad
+     ├─ app/sound.js      each frame's sound -> the NES game loader, which plays it (loader/nes-sound)
+     ├─ app/caraudio.js   asks the head unit's audio manager to put that on the speakers
      │
- app/nes-core.js        runs the emulator: ROM in, pad in, one frame at a time, picture out
+ app/nes-core.js        runs the emulator: ROM in, pad in, one frame at a time, picture and sound out
      │
  app/nes.wasm           FCEUmm + core/mgu_libretro.c, compiled to WebAssembly (core/build.sh)
      │
@@ -125,7 +137,7 @@ With *Parked only* on, the game stops and saves once the car moves faster than 3
 
 - **The emulator runs inside the app's own Node.js process,** as the kit's Doom does. The head unit's Node 8 only knows the first version of WebAssembly, so the core is built for that.
 - **Each frame is handed to the kit's GPU renderer as a pixel image** and scaled by whole pixels. Without the renderer the game shows at twice its size in the head unit's own image, a few pictures a second.
-- **No sound.** Nothing on the head unit takes an app's samples yet. The emulator produces them; they are dropped.
+- **The sound** leaves the emulator with each frame, 48000 samples a second, and goes over a socket to the NES game loader's player, which keeps 40 ms of it ahead of the sound device and plays it a shade slower or faster to stay there: the game's clock and the device's are two. Without the loader the samples are dropped.
 - More on the build of the core, and what it was checked against, in [`core/README.md`](core/README.md).
 
 ## Try it in the emulator
@@ -186,6 +198,7 @@ Both run without a game, a browser or the kit. They cover:
 - the games and saves on disk: the app's packs, the data folder and a USB stick's folder, titles, state, battery memory, the game played last
 - the two games that come with the app, played in the emulator: every button of Pad Test lights and counts, and Snake is steered to an apple, paused, run into a wall and started again
 - games from a phone: the QR code against a reference encoder's, and the NES game loader from the app's request to a game sent over HTTP, with a stand-in for the head unit's firewall program: what it takes and refuses, where it writes, the firewall rules while the page is open and after (not on Windows); and, run as root on Linux, the page as the app's own user saving a game in an app's folder laid out and owned as a car has it
+- a game's sound: a note out of the emulator as the note it is; from the app through the loader to a stand-in for the program that plays it, whole and in order, the program going when the game stops and not started over and over when it cannot play; the request for the car's speakers as other apps make it; and, on Linux, the program itself (`loader/nes-sound`) playing a note from 48000 and from 44100 samples a second
 - a USB gamepad: the packets that switch an Xbox pad on and what its reports mean, as the Linux kernel's driver has them; the pad found on the USB bus as a head unit lists it; and its buttons from a stand-in for the program that reads it, through the loader to the app, with the pad pulled out and plugged in again and the game stopping. The program itself (`loader/nes-usbpipe`) is not in the tests: `node tools/pad-try.js` runs it on a pad plugged into the PC
 - what the MGU Store reads: `mgu-repo.json`, and the package in `store/` being this `app/` at its version, with no SDK in it and no game but those two
 
@@ -326,14 +339,15 @@ The emulator on a PC draws with the kit's own draw engine and runs the kit's own
 - **The games screen** (0.5.0): all of it. That the controller steers it (it comes to the app as in a game, where it has not been reported on either), that taps land on TAB, UP, DOWN and OK, that the gamepad steers it, and that the rows can be read from the driver's seat. The emulator shows the page and takes all three; the menu's *Continue* and *Settings* do not depend on any of it.
 - **The controller:** the gate holding the knob for the game, and the first knob click counting.
 - **A drawn screen beside the game's:** one car showed there is none. The GPU renderer shows the first drawn screen of an app, and every picture the app handed the HMI itself, for that screen or a second, was answered with `INVALID_MODELID` (the app's log has it). With 0.4.0, "Add games from a phone" was a second drawn screen and stayed empty. Since 0.4.1 it is drawn on the game's screen, in the game's place, by the renderer. On that car, with 0.4.2, a phone then opened the page behind the code, whose address only that screen tells: so it shows there.
-- **Games from a phone:** tried on one car (2026-11-20; the app 0.4.2, the loader 0.2.2), on its owner's home Wi-Fi, where the head unit had `192.168.1.x` on `wlan0` and `172.16.222.97` on `wlan_bridge` at once. A phone on that Wi-Fi opened the page at the `wlan0` address, so it got through the head unit's firewall there. That the loader's rule is what let it in is taken from that alone: the loader's journal of it was not read. The game it sent was not saved: "the car could not save it (EACCES)". The loader had started the page as the owner of the app's folder, which on a head unit is the Store's user and not the app's, and outside a folder the app's user enters only through a group the head unit gives its apps' processes ([`loader/games.js`](loader/games.js) has the folders as read there). Since 0.2.3 the page is the app's own user, the number in its folder's name, and is started inside the app's data folder. That saves a game in a copy of those folders on a PC, and is still for a car to show. The car's own Wi-Fi (`wlan_bridge`) is untried. `journalctl -u clucraft-nes-loader` on the head unit says what the loader did.
+- **Sound** (0.6.0, the loader 0.3.0): all of it. That the head unit's installer takes the app with the audio manager's two interfaces in its manifest, that the app may call them, that the loader's player loads the head unit's sound library and the mixer takes what it plays, how far the sound trails the picture, and what the head unit plays when the game stops. Another app's player is heard on that car through the same input and the same request ([clucraft/plex-idrive](https://github.com/clucraft/plex-idrive)); this one's is a different program, and no car has run it. `journalctl -u clucraft-nes-loader` has a line starting `sound:` for each step, and the app's log lines starting `sound:` and `car audio:`.
+- **Games from a phone:** its owner reports that it works now (2026-11-20: a game sent was saved and played; which versions were on the car was not read). Before that, tried on that car (2026-11-20; the app 0.4.2, the loader 0.2.2), on its owner's home Wi-Fi, where the head unit had `192.168.1.x` on `wlan0` and `172.16.222.97` on `wlan_bridge` at once. A phone on that Wi-Fi opened the page at the `wlan0` address, so it got through the head unit's firewall there. That the loader's rule is what let it in is taken from that alone: the loader's journal of it was not read. The game it sent was not saved: "the car could not save it (EACCES)". The loader had started the page as the owner of the app's folder, which on a head unit is the Store's user and not the app's, and outside a folder the app's user enters only through a group the head unit gives its apps' processes ([`loader/games.js`](loader/games.js) has the folders as read there). Since 0.2.3 the page is the app's own user, the number in its folder's name, and is started inside the app's data folder. That saves a game in a copy of those folders on a PC, and on the car by its owner's report. The car's own Wi-Fi (`wlan_bridge`) is untried. `journalctl -u clucraft-nes-loader` on the head unit says what the loader did.
 - **A USB gamepad:** shown on one car (2026-11-19; kernel 4.14.198-apl, an Xbox One S pad), where it works. So the Store installs the loader's program and the head unit runs it; a user that is not root, in the group of the head unit's USB devices, may open the pad (till the loader 0.2.3 that was the owner of the app's folder, on a car the Store's user; since then it is the app's own, in the same group, which no car has run yet); and the pad answers the packets that switch it on. Before the loader's part was written, a look at that head unit had shown the pad listed on its USB bus with no driver bound, no HID or input layer in the kernel at all, and usbfs there for the group `mgu_usb`. Still to tell: how soon a button reaches the game, and whether another car's head unit is the same. `journalctl -u clucraft-nes-loader` has a line starting `gamepad:` for each step, and the app's log one for what it was told.
 - **Games on a USB stick:** whether the head unit lets the app read a stick at all. The app's log says at each start what it found, or what it was refused: a line starting `nes: USB sticks:`.
 - **The MGU Store:** on one car it listed this repository and installed the app and the loader from it. Which renderer drew the app there was not noted, so this still stands: that the app draws through the Store's own renderer as it does through the kit's. mgu-render reads the kit renderer's commands, pixel images and the hold on the controller included. Its README lists the kit's apps drawing under it, and that hold, among what only a car can show.
 
 ## Known gaps
 
-- **No sound.**
+- **Sound without the loader,** and on a head unit whose audio manager or sound group is another: there is none. A head unit that lacks the audio manager's interfaces may refuse the app as the Store installs it (the package is built on a PC, with them in its manifest); none is known.
 - **Gamepads other than an Xbox One or Series pad on a cable,** and a second player. [A USB gamepad](#a-usb-gamepad) says what is read; `loader/pad.js` is where another pad's packets would be told.
 - **A PAL game** runs at its 50 frames a second on the 60 Hz screen, so it scrolls less smoothly.
 - **iDrive 8:** the picture is centred and the touch buttons are not drawn. Not tested.
@@ -346,6 +360,7 @@ app/                  the head-unit app: app.json, main.js (screens, pacing, sav
                       nes-core.js (the emulator's runner), controls.js, library.js,
                       tabs.js (the games screen: the list of games, Add games, the settings),
                       phone.js and qr.js (Add games from a phone), pad.js (a USB gamepad),
+                      sound.js and caraudio.js (the game's sound, and the car's speakers for it),
                       nes.wasm (the emulator, built by core/build.sh), icon.png,
                       games/ (the two games that come with it), roms/ (your games)
 core/                 the emulator's build: mgu_libretro.c (a libretro frontend for WebAssembly),
@@ -353,7 +368,8 @@ core/                 the emulator's build: mgu_libretro.c (a libretro frontend 
 docs/                 screenshots
 games/                the source of the two games that come with the app, and their build (cc65)
 loader/               the NES game loader: the service that opens the page for games from a phone
-                      and reads a USB gamepad; nes-usbpipe is its program for that (src/nes-usbpipe/: Go)
+                      and reads a USB gamepad; nes-usbpipe is its program for that (src/nes-usbpipe/: Go);
+                      and plays a game's sound: nes-sound (src/nes-sound/: Go)
 patches/idrive7-apps/ the emulator on Windows, applied by tools/setup.js
 mgu-repo.json         what the MGU Store reads: the app, what it needs, where its package is;
                       the loader as an optional tool
@@ -362,9 +378,10 @@ store/                the package the MGU Store installs (no SDK, no games but t
                       written by tools/build-store.js
 test/run.js           tests of the emulator, the controls, the tabs, the saves, the two games, the loader and
                       store/ (Node 8 and current); fake-nft.js stands in for the firewall program,
-                      fake-usbpipe.js for a gamepad
+                      fake-usbpipe.js for a gamepad, fake-sound.js for the program that plays sound
 tools/                setup.js, emu.js, build-car.js, node8.js; build-store.js and tar.js (store/);
                       loader-dev.js (the loader beside the emulator); build-usbpipe.js (loader/nes-usbpipe);
+                      build-sound.js (loader/nes-sound);
                       pad-try.js (a gamepad plugged into the PC, read as on the head unit);
                       prebuilt.js (the Store's build step on the head unit: the package is there)
 vendor/idrive7-apps   submodule: the MGU app kit, emulator and installer

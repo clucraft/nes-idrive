@@ -6,8 +6,9 @@
  * The emulator is FCEUmm (GPL-2, see LICENSE / NOTICE in this folder) compiled to WebAssembly
  * (nes.wasm, built by core/build.sh) and run here at the console's 60 frames a second
  * (nes-core.js). Each frame is the console's own 256 x 240 picture (224 lines with the edges hidden),
- * handed to the GPU renderer as a pixel image and shown three times as big, pixel for pixel. No
- * sound yet: nothing on the head unit takes an app's samples.
+ * handed to the GPU renderer as a pixel image and shown three times as big, pixel for pixel. Its
+ * sound goes to the NES game loader, which plays it into the head unit's sound mixer (sound.js), and
+ * the head unit's audio manager is asked to put that on the speakers (caraudio.js): setting "Sound".
  *
  * Screens:
  *   MAIN  the main menu, an HMI list of four: Continue, Games, Add games from a phone, Settings. The last
@@ -47,6 +48,8 @@ const { Library, mkdirp, usbFolders } = require('./library');
 const { Phone } = require('./phone');
 const { Pad, PAD } = require('./pad');
 const { Tabs } = require('./tabs');
+const { Sound } = require('./sound');
+const { createCarAudio } = require('./caraudio');
 const { qr } = require('./qr');
 
 const W = 1600, H = 520, IMG = 1;
@@ -246,6 +249,24 @@ mgu.run({
             if (down & (PAD.A | PAD.START)) tabs.input({ press: true });
         };
         const pad = new Pad({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onMask: (m) => ctl.setExternal(m), onButtons: padSteer });
+        // The game's sound (setting "Sound", on at first), while it runs: the NES game loader plays it (sound.js),
+        // and once its player is up the head unit's audio manager is asked for the speakers (caraudio.js; not
+        // before: they would be taken from the radio for nothing). On a PC there is no audio manager to ask.
+        const sound = new Sound({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log });
+        const speakers = ctx.signals.hasNative && ctx.signals.hasNative() ? createCarAudio(ctx.signals, log, path.join(ctx.dataDir, 'speakers.json')) : null;
+        const loud = () => going && settings.get('sound') !== false;
+        /** the sound's state in a few words, for the panel beside the game; null with the setting off */
+        const soundSays = () => {
+            if (settings.get('sound') === false) return null;
+            const s = sound.state, at = speakers ? speakers.state() : null;
+            if (s.step === 'missing') return 'Needs the NES game loader';
+            if (s.step === 'failed') return s.error || 'Not here';
+            if (s.step !== 'on') return 'Starting...';
+            if (s.player === 'busy') return 'Another app has the sound device';
+            if (s.player === 'error') return s.error || 'Cannot be played';
+            if (at && at.error) return 'No speakers: ' + at.error;
+            return s.player === 'playing' ? 'On the car\'s speakers' : 'Waiting for the speakers';
+        };
 
         /* ---------- run while the game screen is up; save when it stops ---------- */
         const shown = () => ui.isVisible('GAME') && (!ui.hasFocus || ui.hasFocus('GAME'));
@@ -268,6 +289,8 @@ mgu.run({
             if (going) { applyOptions(); if (Date.now() - keptT > KEEP_MS) keep(true); }
             // a gamepad is read while the screen shows: it steers the tabs too
             if (up && settings.get('pad') === true) pad.start(); else { pad.stop(); padWas = 0; again = null; }
+            if (loud()) sound.start(nes.sampleRate || 48000); else sound.stop();
+            if (speakers) speakers.want(loud() && sound.state.step === 'on' && ['open', 'playing', 'waiting'].indexOf(sound.state.player) >= 0);
         }
         setInterval(sync, 200);
         if (ui.onFocus) ui.onFocus(() => sync());
@@ -288,6 +311,7 @@ mgu.run({
             for (let i = 0; i < n && nes.loaded; i++) {
                 nes.setPad(0, ctl.mask());
                 if (nes.run()) drew = true;
+                if (sound.ready) { const a = nes.audio(); if (a) sound.write(a.bytes); }
             }
             if (n) { emuN += n; emuMs += mono() - now; }
             if (!drew) return;
@@ -316,11 +340,11 @@ mgu.run({
             r.text(fit(r, game.title, 46, 'bold', w), x, 92, 46, C.text, { font: 'bold', literal: true });
             const rows = [['Push', 'D-pad'], ['Press', NAMES[settings.get('press')] || 'A'],
                 ['Turn right', NAMES[settings.get('turnR')] || null], ['Turn left', NAMES[settings.get('turnL')] || null],
-                ['BACK', 'Menu (the game is saved)'], ['LB + RB', pad.name ? 'The list of games' : null]].filter((q) => q[1]);
+                ['BACK', 'Menu (the game is saved)'], ['LB + RB', pad.name ? 'The list of games' : null], ['Sound', soundSays()]].filter((q) => q[1]);
             rows.forEach((q, i) => {
                 const y = 176 + i * 54;
                 r.text(q[0], x, y, 30, C.key, { font: 'bold' });
-                r.text(q[1], x + 230, y, 30, C.dim);
+                r.text(fit(r, String(q[1]), 30, null, w - 230), x + 230, y, 30, C.dim, { literal: true });
             });
             const top = HMI7.barTop + 10, bh = r.h - top - 10;
             btns.forEach((b) => {

@@ -37,6 +37,18 @@
  * the NES app's user in the group the head unit gives its USB devices to, not as root, and no port and no
  * firewall rule comes with it.
  *
+ * And a fourth: play a sound. An app has no sound device (sound.js). While a game runs the app may send its sound:
+ *
+ *   {"cmd":"sound","rate":48000}   -> the same answer, with "sound":{"on":true,"state":"starting"}. From then on
+ *                                 what the app sends on that connection is no longer lines but the game's sound,
+ *                                 signed 16-bit little-endian, left and right, `rate` samples a second, as it
+ *                                 is made; {"event":"sound","sound":{"on":true,"state":"playing"|"waiting"|
+ *                                 "busy"|"error","error":...}} comes back whenever that changes. The sound ends
+ *                                 with the connection.
+ *
+ * The program that plays it (nes-sound) runs as nobody in the group of the head unit's sound devices, not as
+ * root. That it is heard is the app's doing: it asks the head unit's audio manager for the speakers.
+ *
  * Part of nes-idrive (GPL-2.0-or-later). Runs on the head unit's Node 8.
  */
 const net = require('net');
@@ -48,8 +60,9 @@ const { fork } = require('child_process');
 const games = require('./games');
 const firewall = require('./nft');
 const pads = require('./pad');
+const sounds = require('./sound');
 
-const VERSION = '0.2.4';
+const VERSION = '0.3.0';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often
@@ -58,6 +71,8 @@ const KEPT = 30;                    // games named in the page's status
 const PAD_SCAN_MS = 2000;           // a gamepad plugged in while the app asks is found within this
 const PAD_SHORT_MS = 3000;          // a gamepad's helper that ends sooner than this did not work...
 const PAD_TRIES = 5;                // ...and after this many in a row it is not started again for this game
+const SOUND_SHORT_MS = 3000, SOUND_TRIES = 5;   // the same for the program that plays a game's sound
+const SOUND_AGAIN_MS = 1000;        // it is started again this long after it ended, while the app still sends
 
 /**
  * The Wi-Fi a phone reaches the head unit on: its interfaces, [{ name, address, kind }].
@@ -90,20 +105,24 @@ function carWifi(only, joined, all) {
  *         (null: the firewall is left alone), asSelf: the page and the gamepad's helper run as this process's
  *         user, pageMinutes, idleMs, refreshMs, exit: false to stay (tests), log,
  *         padPipe: [the gamepad's helper program, arguments...], padFind(): the pads plugged in, padScanMs,
- *         padEnv: the helper's environment }
+ *         padEnv: the helper's environment,
+ *         soundPipe: [the program that plays sound, arguments before its own...] (null: no sound here),
+ *         soundDevice, soundEnv, etc: the folder of passwd and group (a test) }
  */
 function createService(opts) {
     const o = Object.assign({ port: PORT, nft: 'nft', pageMinutes: PAGE_MINUTES, idleMs: IDLE_MS, refreshMs: REFRESH_MS,
-        padPipe: [path.join(__dirname, 'nes-usbpipe')], padFind: pads.find, padScanMs: PAD_SCAN_MS }, opts || {});
+        padPipe: [path.join(__dirname, 'nes-usbpipe')], padFind: pads.find, padScanMs: PAD_SCAN_MS,
+        soundPipe: [path.join(__dirname, 'nes-sound')], soundDevice: sounds.DEVICE }, opts || {});
     const log = o.log || ((s) => console.log(s));
     const connections = new Set();
-    let page = null, pad = null, lastUse = Date.now(), stopping = false, whyClosed = null;
+    let page = null, pad = null, sound = null, lastUse = Date.now(), stopping = false, whyClosed = null;
 
     const view = () => (page
         ? { open: true, url: page.urls[0] || null, urls: page.urls, nets: page.nets, until: page.until, firewall: page.firewall, saved: page.saved, note: page.note }
         : { open: false, why: whyClosed });
     const padView = () => (pad ? { on: true, name: pad.dev ? pad.dev.name : null, buttons: pad.buttons, error: pad.error } : { on: false });
-    const status = () => ({ ok: true, version: VERSION, app: !!games.findApp(o.oapDir), page: view(), pad: padView() });
+    const soundView = () => (sound ? { on: true, state: sound.state, error: sound.error } : { on: false });
+    const status = () => ({ ok: true, version: VERSION, app: !!games.findApp(o.oapDir), page: view(), pad: padView(), sound: soundView() });
     const say = (c, obj) => { if (c && !c.destroyed) { try { c.write(JSON.stringify(obj) + '\n'); } catch (e) { /* gone */ } } };
     const changed = () => { if (page) say(page.owner, { event: 'page', page: view() }); };
     const padChanged = () => { if (pad) say(pad.owner, { event: 'pad', pad: padView() }); };
@@ -258,6 +277,56 @@ function createService(opts) {
         lastUse = Date.now();
     }
 
+    /* ---------- a game's sound, for as long as the app sends it ---------- */
+    function soundStart(mine) {
+        const startT = Date.now();
+        mine.player = sounds.open({
+            pipe: o.soundPipe, device: o.soundDevice, rate: mine.rate, as: mine.as, env: o.soundEnv, log: (s) => log('sound: ' + s),
+            onState: (st) => {
+                if (sound !== mine) return;
+                if (st.state === 'ended') {
+                    mine.player = null;
+                    // a player that ends at once cannot play here (no sound library, no such device): not for ever again
+                    mine.fails = Date.now() - startT < SOUND_SHORT_MS ? mine.fails + 1 : 0;
+                    if (st.error) mine.error = st.error;
+                    if (mine.fails >= SOUND_TRIES) { mine.state = 'error'; mine.error = mine.error || 'the sound cannot be played'; }
+                    else mine.timer = setTimeout(() => { if (sound === mine) soundStart(mine); }, o.soundAgainMs || SOUND_AGAIN_MS);
+                } else {
+                    mine.state = st.state;
+                    if (st.error) mine.error = st.error; else if (st.state === 'playing' || st.state === 'open') mine.error = null;
+                }
+                const now = mine.state + (mine.error ? ': ' + mine.error : '');
+                if (now !== mine.said) { mine.said = now; log('sound: ' + now + (mine.state === 'error' ? ' (' + SOUND_TRIES + ' times: not tried again for this game)' : '')); }
+                say(mine.owner, { event: 'sound', sound: soundView() });
+            },
+        });
+    }
+
+    function soundOn(owner, rate) {
+        if (!o.soundPipe) return { ok: false, error: 'No sound on this computer' };
+        const r = Math.round(Number(rate));
+        if (!(r >= 8000 && r <= 192000)) return { ok: false, error: 'sound: "rate" is the samples a second, 8000 to 192000' };
+        let as = {};
+        if (!o.asSelf) { try { as = sounds.ids(o.etc); } catch (e) { log('sound: ' + e.message); return { ok: false, error: e.message }; } }
+        if (sound) soundOff('asked again');
+        const mine = sound = { owner, rate: r, as, player: null, fails: 0, state: 'starting', error: null, said: null, timer: null };
+        // from here on this connection's bytes are the sound
+        owner.pcm = (d) => { if (sound === mine && mine.player) mine.player.write(d); };
+        log('sound: the app sends a game\'s, ' + r + ' samples a second');
+        soundStart(mine);
+        return status();
+    }
+
+    function soundOff(why) {
+        if (!sound) return;
+        const was = sound;
+        sound = null;
+        clearTimeout(was.timer);
+        if (was.player) was.player.close();
+        log('sound: no longer played' + (why ? ': ' + why : ''));
+        lastUse = Date.now();
+    }
+
     function onLine(c, line) {
         let m = null;
         try { m = JSON.parse(line); } catch (e) { /* below */ }
@@ -271,18 +340,25 @@ function createService(opts) {
             if (pad && pad.owner === c) padOff('the app says so');
             return say(c, status());
         }
+        if (m.cmd === 'sound') return say(c, soundOn(c, m.rate));
         say(c, { ok: false, error: 'unknown: ' + m.cmd.slice(0, 20) });
     }
 
     const server = net.createServer((c) => {
         connections.add(c);
         lastUse = Date.now();
-        let text = '';
-        c.setEncoding('utf8');
+        // lines of JSON, until the connection is one that sends a game's sound (c.pcm, set by "sound"): bytes then
+        let held = Buffer.alloc(0);
         c.on('data', (d) => {
-            text += d;
-            if (text.length > 4096) { c.destroy(); return; }
-            for (let nl = text.indexOf('\n'); nl >= 0; nl = text.indexOf('\n')) { const line = text.slice(0, nl); text = text.slice(nl + 1); if (line.trim()) onLine(c, line); }
+            if (c.pcm) return c.pcm(d);
+            held = held.length ? Buffer.concat([held, d]) : d;
+            for (let nl = held.indexOf(10); nl >= 0 && !c.pcm; nl = held.indexOf(10)) {
+                const line = held.slice(0, nl).toString('utf8');
+                held = held.slice(nl + 1);
+                if (line.trim()) onLine(c, line);
+            }
+            if (c.pcm) { const rest = held; held = Buffer.alloc(0); if (rest.length) c.pcm(rest); return; }
+            if (held.length > 4096) c.destroy();
         });
         c.on('error', () => {});
         c.on('close', () => {
@@ -290,12 +366,13 @@ function createService(opts) {
             lastUse = Date.now();
             if (page && page.owner === c) closePage('the app left');
             if (pad && pad.owner === c) padOff('the app left');
+            if (sound && sound.owner === c) soundOff('the app left');
         });
     });
     server.on('error', (e) => { log('socket: ' + e.message); stop(1); });
 
     const idle = setInterval(() => {
-        if (!page && !pad && !connections.size && Date.now() - lastUse > o.idleMs) { log('nothing to do: ending until the app asks again'); stop(0); }
+        if (!page && !pad && !sound && !connections.size && Date.now() - lastUse > o.idleMs) { log('nothing to do: ending until the app asks again'); stop(0); }
     }, Math.min(10000, Math.max(50, o.idleMs / 2)));
 
     function stop(code) {
@@ -304,6 +381,7 @@ function createService(opts) {
         clearInterval(idle);
         closePage('the service ends');
         padOff('the service ends');
+        soundOff('the service ends');
         connections.forEach((c) => c.destroy());
         try { server.close(); } catch (e) { /* not listening */ }
         if (o.exit !== false) setTimeout(() => process.exit(code || 0), 100);
