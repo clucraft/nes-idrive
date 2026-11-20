@@ -1,6 +1,6 @@
 'use strict';
 /**
- * The package for a car: dist/nes@<version>.mgu, for the kit's installer
+ * The package for a car: dist/<id>@<version>.mgu, for the kit's installer
  * (vendor/idrive7-apps deploy/make-car-kit.sh, push-to-car.sh / .ps1).
  *
  *   node tools/build-car.js

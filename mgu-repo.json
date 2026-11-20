@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "id": "clucraft_nes",
+      "kind": "app",
+      "path": "store",
+      "mguHmi": ["ID7"],
+      "needs": ["renderer"],
+      "requires": { "mgu-inputgate": "1.0.0" },
+      "uninstallable": true,
+      "build": {
+        "node": "tools/prebuilt.js",
+        "args": ["{dir}/{id}@{version}.tgz"],
+        "output": "{dir}/{id}@{version}.tgz",
+        "shared": ["LICENSE", "NOTICE"]
+      }
+    }
+  ],
+  "tools": [
+    {
+      "id": "clucraft-nes-loader",
+      "path": "loader",
+      "optional": true,
+      "uninstallable": true,
+      "mguHmi": ["ID7"]
+    }
+  ]
+}

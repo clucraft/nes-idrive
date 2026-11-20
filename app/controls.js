@@ -14,7 +14,13 @@
  *
  * A tap holds its button for TAP frames and lets go for GAP frames, so turning the knob several
  * clicks gives that many presses (rapid fire). mask() is asked once for every frame the game runs.
- * setExternal() takes the buttons of another pad (a USB gamepad's helper, one day).
+ * A push or press that is over before the game's next frame still reaches it, for SEEN frames.
+ * setExternal() takes the buttons of another pad: a USB gamepad's (pad.js). They are let go when the game stops.
+ *
+ * While no game runs and the screen shows its tabs (tabs.js), navigate(true) has the same controller and
+ * buttons steer those: opts.nav gets { turn: clicks }, { push: 'N' | 'E' | 'S' | 'W' }, { press: true }, and
+ * for the four buttons { tab: 1 }, a push up, a push down and a press. What is still held when a game starts
+ * (the press that chose it) is not the game's until it was let go once.
  */
 const { BTN } = require('./nes-core');
 
@@ -28,8 +34,12 @@ const num = (v, names) => (typeof v === 'number' ? v : v != null && names[v] != 
 const DIR = { 1: BTN.UP, 2: BTN.UP, 4: BTN.RIGHT, 5: BTN.RIGHT, 7: BTN.DOWN, 8: BTN.DOWN, 10: BTN.LEFT, 11: BTN.LEFT };
 const BY_NAME = { a: BTN.A, b: BTN.B, start: BTN.START, select: BTN.SELECT, none: 0 };
 const BAR = { BTN_SELECT: BTN.SELECT, BTN_START: BTN.START, BTN_B: BTN.B, BTN_A: BTN.A };
+// the same four while the tabs show: the next tab, up, down, choose (main.js draws them so)
+const BAR_NAV = { BTN_SELECT: { tab: 1 }, BTN_START: { push: 'N' }, BTN_B: { push: 'S' }, BTN_A: { press: true } };
+const PUSHED = { [BTN.UP]: 'N', [BTN.RIGHT]: 'E', [BTN.DOWN]: 'S', [BTN.LEFT]: 'W' };
 const TAPPED = [BTN.A, BTN.B, BTN.START, BTN.SELECT];
 const TAP = 5, GAP = 4, QUEUE = 6;         // frames held, frames let go, taps waiting at most
+const SEEN = 2;                            // frames a push or press is held at least
 const STALE_MS = 1500, HMI_PRESS_MS = 500;
 
 class Controls {
@@ -41,10 +51,14 @@ class Controls {
         this.pos = null;                // knob counter
         this.dir = 0;                   // the D-pad button the push holds
         this.pressed = false;
+        this.dirSeen = 0; this.dirFrames = 0; this.pressFrames = 0;   // a push / press just begun: held for these frames at least
         this.msgT = 0; this.same = 0; this.lastMsg = '';
         this.cyclic = false;            // the car repeats unchanged messages (then a lost release is timed out)
         this.hmiPressT = -1e9;          // a press the HMI saw too (no controller gate)
         this.enabled = false;
+        this.navOn = false;             // the tabs are steered (navigate)
+        this.held = false;              // the press was down when the game started: not the game's yet
+        this.extHeld = 0;               // the same for the other pad's buttons
         this.logged = 0;
         this.ext = 0;
         this.tap = new Map();           // button -> { hold, gap, wait }
@@ -53,6 +67,9 @@ class Controls {
     }
 
     _map(which, dflt) { const v = this.o[which] && this.o[which](); return BY_NAME[v] != null ? BY_NAME[v] : BY_NAME[dflt]; }
+    _nav(ev) { if (this.navOn && !this.enabled && this.o.nav) { try { this.o.nav(ev); } catch (e) { this.log.error('controls: nav', e); } } }
+    /** the tabs are on screen (no game runs): the controller and the buttons steer them */
+    navigate(on) { this.navOn = !!on; }
 
     /* ---------- controller ---------- */
     /** v: the controller's state; gated: it came from the renderer (the HMI did not get it) */
@@ -71,26 +88,31 @@ class Controls {
         if (typeof pos === 'number') {
             if (this.pos !== null) {
                 const d = ((pos - this.pos + 32768) & 0xffff) - 32768;
-                if (d && Math.abs(d) <= 64 && this.enabled) this.taps(this._map(d > 0 ? 'turnR' : 'turnL', d > 0 ? 'b' : 'start'), Math.abs(d));
+                if (d && Math.abs(d) <= 64) { if (this.enabled) this.taps(this._map(d > 0 ? 'turnR' : 'turnL', d > 0 ? 'b' : 'start'), Math.abs(d)); else this._nav({ turn: d }); }
             }
             this.pos = pos;
         }
-        this.dir = DIR[defl] || 0;
-        const p = pushBtn === 1 || pushBtn === 2;
-        if (p && !this.pressed && !gated) this.hmiPressT = t;
+        const dir = DIR[defl] || 0;
+        // (what is held is noted before the tabs hear of it: a press there can start a game, which asks)
+        const p = pushBtn === 1 || pushBtn === 2, pushed = dir && dir !== this.dir, pressed = p && !this.pressed;
+        this.dir = dir;
         this.pressed = p;
+        if (!p) this.held = false;
+        if (pressed && !gated) this.hmiPressT = t;
+        if (pushed) { if (this.enabled) { this.dirSeen = dir; this.dirFrames = SEEN; } else this._nav({ push: PUSHED[dir] }); }
+        if (pressed) { if (this.enabled) this.pressFrames = SEEN; else this._nav({ press: true }); }
     }
 
     /* ---------- the screen's buttons ---------- */
     /** an HMI bar button was pressed: a tap on the touchscreen (or the HMI acting on the knob's press) */
     bar(name) {
         const b = BAR[name];
-        if (!b || !this.enabled) return false;
+        if (!b || !(this.enabled || this.navOn)) return false;
         // without the controller gate the knob's press reaches the HMI as well, which presses the
         // bar button its focus is on: that press is already A here
         if (this.now() - this.hmiPressT < HMI_PRESS_MS) return false;
         this.flash.set(name, this.now());
-        this.taps(b, 1);
+        if (this.enabled) this.taps(b, 1); else this._nav(BAR_NAV[name]);
         return true;
     }
     /** 0..1: how lit a bar button's picture is (it fades after a tap) */
@@ -102,16 +124,21 @@ class Controls {
         if (s) s.wait = Math.min(QUEUE, s.wait + n);
     }
     /** buttons of another pad, OR-ed in (0: none) */
-    setExternal(mask) { this.ext = mask | 0; }
+    setExternal(mask) { this.ext = mask | 0; this.extHeld &= this.ext; }
 
     /** The pad for the next frame of the game (call once per frame: the taps count frames). */
     mask() {
         if (!this.enabled) return 0;
-        let m = this.ext;
+        let m = this.ext & ~this.extHeld;
         if (this.live) {
             // a release lost on the way (UDP) is timed out when the car repeats its messages
             const stale = this.cyclic && this.now() - this.msgT > STALE_MS;
-            if (!stale) { m |= this.dir; if (this.pressed) m |= this._map('press', 'a'); }
+            if (!stale) {
+                m |= this.dir || (this.dirFrames > 0 ? this.dirSeen : 0);
+                if ((this.pressed && !this.held) || this.pressFrames > 0) m |= this._map('press', 'a');
+            }
+            if (this.dirFrames > 0) this.dirFrames--;
+            if (this.pressFrames > 0) this.pressFrames--;
         }
         this.tap.forEach((s, b) => {
             if (s.hold > 0) { m |= b; if (--s.hold === 0) s.gap = GAP; } else if (s.gap > 0) s.gap--;
@@ -125,9 +152,11 @@ class Controls {
 
     /** game running or not (stopped: everything is let go, waiting taps are dropped) */
     enable(on) {
+        // from the tabs into a game: the press that chose it is still down
+        if (on && !this.enabled && this.navOn) { this.held = this.pressed; this.extHeld = this.ext; }
         this.enabled = !!on;
-        if (!on) this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; });
+        if (!on) { this.tap.forEach((s) => { s.hold = s.gap = s.wait = 0; }); this.dirFrames = this.pressFrames = 0; this.ext = 0; }
     }
 }
 
-module.exports = { Controls, BAR, TAP, GAP };
+module.exports = { Controls, BAR, BAR_NAV, TAP, GAP, SEEN };

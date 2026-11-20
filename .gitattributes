@@ -1,5 +1,8 @@
 * text=auto eol=lf
 *.png binary
 *.wasm binary
+*.tgz binary
+*.nes binary
+loader/nes-usbpipe binary
 *.patch text eol=lf
 *.sh text eol=lf

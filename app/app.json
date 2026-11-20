@@ -1,9 +1,9 @@
 {
-  "id": "nes",
+  "id": "clucraft_nes",
   "title": "NES",
-  "description": "NES games on the iDrive (FCEUmm). Main menu with the games and all settings; the game pixel for pixel on the whole screen, on the controller and touch buttons; BACK returns to the menu and saves",
-  "version": "0.1.0",
-  "vendor": "custom",
+  "description": "NES games on the iDrive (FCEUmm emulator). Comes with two small free games, Snake and Pad Test. Your own .nes files come from a phone (Add games shows a code to scan; needs the NES game loader from this source), from a folder \"nes\" on a USB stick, or are copied to the head unit. A short main menu; the list of games, Add games and the settings as tabs on one drawn screen, steered by the controller, a USB gamepad or four touch buttons; the game pixel for pixel on the whole screen; BACK returns to the menu and saves. Sound on the car's speakers, with the NES game loader (it takes the place of the radio while a game runs; a setting switches it off)",
+  "version": "0.6.0",
+  "vendor": "clucraft",
   "loggingId": "OAA6",
   "maxDiskUsage": 104857600,
   "iconGlyph": "NES",
@@ -13,17 +13,37 @@
     },
     "de.bmw.infotainment.controlelements.FrontCCU": {
       "statusRotaryEncoderState": "rs"
+    },
+    "org.genivi.am.commandinterface.CommandControl": {
+      "_instances": "1",
+      "_methods": [
+        "connect",
+        "disconnect",
+        "getListMainConnections"
+      ],
+      "_optional": "the sound on the car's speakers"
+    },
+    "org.genivi.am.routinginterface.RoutingControlObserver": {
+      "_instances": "1",
+      "_methods": [
+        "hookSourceAvailablityStatusChange"
+      ],
+      "_optional": "the sound on the car's speakers"
     }
   },
   "config": {
-    "romDirs": []
+    "romDirs": [],
+    "usbRoots": [
+      "/media",
+      "/run/media"
+    ],
+    "loaderSocket": "/run/clucraft-nes-loader.sock"
   },
   "screens": [
     {
       "name": "MAIN",
       "kind": "menu",
       "title": "NES",
-      "settings": true,
       "items": [
         [
           "button",
@@ -32,68 +52,23 @@
         ],
         [
           "button",
-          "BTN_RESET",
-          "Restart"
+          "BTN_GAMES",
+          "Games"
+        ],
+        [
+          "button",
+          "BTN_ADD",
+          "Add games from a phone"
+        ],
+        [
+          "button",
+          "BTN_SET",
+          "Settings"
         ],
         [
           "text",
           "MENU_INFO",
           ""
-        ],
-        [
-          "button",
-          "BTN_ROM_0",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_1",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_2",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_3",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_4",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_5",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_6",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_7",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_8",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_ROM_9",
-          "-"
-        ],
-        [
-          "button",
-          "BTN_MORE",
-          "More games"
         ]
       ]
     },
@@ -210,6 +185,24 @@
     {
       "key": "touch",
       "label": "Touch buttons beside the picture",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "pad",
+      "label": "USB gamepad (Xbox pad on a cable; needs the NES game loader)",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "key": "sound",
+      "label": "Sound on the car's speakers (needs the NES game loader; in place of the radio)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "joinedWifi",
+      "label": "Add games over the Wi-Fi the car is on (home, phone hotspot)",
       "type": "bool",
       "default": true
     },

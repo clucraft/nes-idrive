@@ -2,12 +2,14 @@
 /**
  * library.js - the games (ROM files) the app can start, and what it keeps for each of them.
  *
- * Games come from two places:
- *   roms.pack          app/roms/*.nes on the PC: the build packs that folder into the app
- *                      (kit/tools/pack_data.py), read-only on the car
+ * Games come from these places, a later one's file winning over an earlier one's of the same name:
+ *   games.pack         app/games/*.nes: the free games that come with the app (games/ has their source)
+ *   roms.pack          app/roms/*.nes on the PC: your own, packed into the app by a build for your car
+ *                      (kit/tools/pack_data.py); never in a package that is published
  *   <data>/roms/       .nes files copied to the app's data folder on the head unit (and any folder
  *                      listed in app.json config.romDirs)
- * A file of the same name in a folder wins over the packed one.
+ *   a USB stick        .nes files in a folder "nes" at the top of a stick that is plugged in
+ *                      (usbFolders; they are played from the stick, not copied)
  *
  * Kept per game in <data>/saves/: <game>.srm (the cartridge's battery memory) and <game>.state (where
  * the game stood when it was last left). <data>/last.json names the game played last.
@@ -69,30 +71,58 @@ function openPack(file) {
     }
 }
 
+/**
+ * The games folders of the USB sticks plugged in: <root>/<stick>/<name> for the first of names that
+ * is there on each stick. The head unit mounts a stick at /media/<its label>.
+ * -> { dirs: [folders], errors: [what could not be read, e.g. the app may not look there] }
+ */
+function usbFolders(roots, names) {
+    const dirs = [], errors = [];
+    (roots || []).forEach((root) => {
+        let sticks = [];
+        try { sticks = fs.readdirSync(root); } catch (e) { if (e.code !== 'ENOENT') errors.push(root + ': ' + (e.code || e.message)); return; }
+        sticks.forEach((stick) => {
+            for (let i = 0; i < names.length; i++) {
+                const dir = path.join(root, stick, names[i]);
+                try {
+                    if (!fs.statSync(dir).isDirectory()) continue;
+                    fs.readdirSync(dir);                       // (it can be read)
+                    dirs.push(dir);
+                    return;
+                } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') errors.push(dir + ': ' + (e.code || e.message)); }
+            }
+        });
+    });
+    return { dirs, errors };
+}
+
 class Library {
-    /** opts: { pack: the roms.pack file, dirs: [folders with .nes files], dataDir, log } */
+    /**
+     * opts: { packs: [data packs with .nes files, the app's own], dirs: [folders with .nes files],
+     *         more: () => [folders that come and go, looked up at each scan], dataDir, log }
+     */
     constructor(opts) {
         this.o = opts;
         this.log = opts.log || console;
         this.saveDir = path.join(opts.dataDir, 'saves');
         this.lastFile = path.join(opts.dataDir, 'last.json');
         this.games = [];
-        this.pack = null;
+        this.packs = null;
     }
 
-    /** Look for games: [{ id, title, file, dir | null }] by title. */
+    /** Look for games: [{ id, title, file, dir | null, pack | null }] by title. */
     scan() {
         const found = new Map();                 // lower-case file name -> game
-        const add = (file, dir) => {
+        const add = (file, dir, pack) => {
             const name = path.basename(file);
-            found.set(name.toLowerCase(), { id: name.replace(ROM_RE, '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) + '-' + hash(name.toLowerCase()), title: titleOf(name), file, dir });
+            found.set(name.toLowerCase(), { id: name.replace(ROM_RE, '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) + '-' + hash(name.toLowerCase()), title: titleOf(name), file, dir, pack });
         };
-        if (!this.pack && this.o.pack) this.pack = openPack(this.o.pack);
-        if (this.pack) this.pack.names.filter((n) => ROM_RE.test(n)).forEach((n) => add(n, null));
-        (this.o.dirs || []).forEach((dir) => {
+        if (!this.packs) this.packs = (this.o.packs || []).map(openPack).filter(Boolean);
+        this.packs.forEach((pack) => pack.names.filter((n) => ROM_RE.test(n)).forEach((n) => add(n, null, pack)));
+        (this.o.dirs || []).concat(this.o.more ? this.o.more() : []).forEach((dir) => {
             let list = [];
             try { list = fs.readdirSync(dir); } catch (e) { return; }
-            list.filter((n) => ROM_RE.test(n)).forEach((n) => add(n, dir));
+            list.filter((n) => ROM_RE.test(n)).forEach((n) => add(n, dir, null));
         });
         this.games = Array.from(found.values()).sort((a, b) => a.title.toLowerCase() < b.title.toLowerCase() ? -1 : a.title.toLowerCase() > b.title.toLowerCase() ? 1 : 0);
         return this.games;
@@ -107,7 +137,7 @@ class Library {
                 if (fs.statSync(f).size > MAX_ROM) return null;
                 return fs.readFileSync(f);
             }
-            const b = this.pack && this.pack.read(g.file);
+            const b = g.pack && g.pack.read(g.file);
             return b && b.length <= MAX_ROM ? b : null;
         } catch (e) { this.log.warn('nes: ' + g.file + ': ' + e.message); return null; }
     }
@@ -140,4 +170,4 @@ class Library {
     }
 }
 
-module.exports = { Library, titleOf, mkdirp };
+module.exports = { Library, titleOf, mkdirp, openPack, usbFolders };

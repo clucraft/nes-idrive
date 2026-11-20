@@ -4,8 +4,8 @@
  *
  *   1. the submodules (vendor/idrive7-apps, vendor/libretro-fceumm) at their pinned commits
  *   2. patches/idrive7-apps/*.patch applied to the kit (the emulator on Windows)
- *   3. app/ linked into the kit as apps/nes (a junction on Windows), where its build and emulator
- *      look for apps
+ *   3. app/ linked into the kit as apps/<the app's id> (a junction on Windows), where its build and
+ *      emulator look for apps
  *   4. an SDK placeholder in vendor/idrive7-apps/oap-sdk when there is no SDK: build.py stages every
  *      app with BMW's SDK, which isn't in git; the emulator never loads it. Car builds refuse the
  *      placeholder (tools/build-car.js): extract the real SDK from your own head unit
@@ -18,7 +18,7 @@ const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const KIT = path.join(ROOT, 'vendor', 'idrive7-apps');
-const APP_ID = 'nes';
+const APP_ID = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'app.json'), 'utf8')).id;
 const APP_LINK = path.join(KIT, 'apps', APP_ID);
 const SDK = path.join(KIT, 'oap-sdk');
 const PLACEHOLDER_VERSION = '0.0.0-emulator-placeholder';
@@ -53,6 +53,16 @@ function patches() {
 
 function linkApp() {
     const target = path.join(ROOT, 'app');
+    // a link to app/ under another id (the app was "nes" before it got its Store id): gone, or the kit lists it twice
+    fs.readdirSync(path.join(KIT, 'apps')).forEach((name) => {
+        const p = path.join(KIT, 'apps', name);
+        try {
+            if (name !== APP_ID && fs.lstatSync(p).isSymbolicLink() && path.resolve(path.dirname(p), fs.readlinkSync(p)) === target) {
+                fs.unlinkSync(p);
+                step('removed the old link apps/' + name);
+            }
+        } catch (e) { /* not ours */ }
+    });
     let st = null;
     try { st = fs.lstatSync(APP_LINK); } catch (e) { /* none */ }
     if (st) {

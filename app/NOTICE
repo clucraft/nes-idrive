@@ -12,7 +12,32 @@ as the submodule vendor/libretro-fceumm; the frontend and the script that builds
 The app runs on the idrive7-apps kit (https://github.com/cauliflowermossgrape/idrive7-apps, MIT),
 whose runtime is packed with it.
 
-No games are included. The app runs .nes files its user supplies.
+caraudio.js, which asks the head unit's audio manager for the speakers, is apps/amn_iptv/lib/car_audio.js
+of https://github.com/M850i-amn/idrive7-apps (commit 0dfa583151e0c59ba8d2a8d9272a1d8685b66d2a), Copyright (c)
+2026 M850i-amn, as https://github.com/clucraft/plex-idrive carries it (Copyright (c) 2026 Drive-In
+contributors); unchanged but for the comment at its top. It is under the MIT licence:
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+    associated documentation files (the "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+    following conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or substantial
+    portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+    LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+    EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+    AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+    OR OTHER DEALINGS IN THE SOFTWARE.
+
+The way the sound reaches the speakers (the head unit's source 287) is Moonride's (JustAnotherPU), as
+aurelmarius' TVH Player (https://github.com/aurelmarius/bmw-apps) and M850i-amn's IPTV use it.
+
+Two small games come with the app, Snake and Pad Test (games.pack). They were written for it and
+are under the same licence; their source is in games/ of https://github.com/clucraft/nes-idrive.
+No other game is included: beyond these the app runs .nes files its user supplies.
 
 Nintendo Entertainment System and NES are trademarks of Nintendo. FCEUmm and this app are not
 affiliated with Nintendo or BMW.
