@@ -13,8 +13,12 @@
  *
  *   {"cmd":"status"}   -> {"ok":true,"version":"...","app":true,"page":{...}}
  *   {"cmd":"open"}     -> the same, with the page open: {"open":true,"url":"http://172.16.222.97:8493/<token>/",
- *                         "urls":[...],"until":<ms>,"firewall":"...","saved":[{"name","size","replaced"}],"note":"..."}
+ *                         "urls":[...],"nets":[{"kind":"car","name":"wlan_bridge","url":"..."}],"until":<ms>,
+ *                         "firewall":"...","saved":[{"name","size","replaced"}],"note":"..."}
  *                         and {"event":"page","page":{...}} to that connection whenever the page changes
+ *   {"cmd":"open","joined":true}   the same, on a Wi-Fi the head unit has joined too (a home network, a
+ *                         phone's hotspot: kind "joined"), which is then the first of "nets" and the "url".
+ *                         Without it the page is on the head unit's own Wi-Fi alone, as before 0.2.2.
  *   {"cmd":"close"}    -> closes the page
  *
  * The page belongs to the connection that opened it: when the app closes it or goes, the page and its
@@ -45,7 +49,7 @@ const games = require('./games');
 const firewall = require('./nft');
 const pads = require('./pad');
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const PORT = 8493;                  // (the MGU Store's own page is 8470; other apps' pages 8490 to 8492)
 const PAGE_MINUTES = 15;
 const REFRESH_MS = 5000;            // the car Wi-Fi's addresses and the firewall rules are looked at this often
@@ -56,20 +60,29 @@ const PAD_SHORT_MS = 3000;          // a gamepad's helper that ends sooner than 
 const PAD_TRIES = 5;                // ...and after this many in a row it is not started again for this game
 
 /**
- * The car Wi-Fi: the interfaces a phone reaches the head unit on, [{ name, address }], the hotspot's first.
- * That is the hotspot's bridge (wlan_bridge, 172.16.222.x), which wireless CarPlay's phone is on too, and an
- * access point of the head unit's own. Not wlan0 / wlan1: there the head unit is a guest on someone's network.
- * `only` names the interfaces instead (a test; "*" is every one, a PC's own network first: the emulator).
+ * The Wi-Fi a phone reaches the head unit on: its interfaces, [{ name, address, kind }].
+ *   kind "car"     the head unit's own Wi-Fi: the hotspot's bridge (wlan_bridge, 172.16.222.x), which wireless
+ *                  CarPlay's phone is on too, and an access point of the head unit's own.
+ *   kind "joined"  a Wi-Fi the head unit has joined (wlan0, wlan1): a home network, a phone's hotspot. There it
+ *                  is a guest among whoever else is on that network, so these are here only when `joined` is
+ *                  asked for (the app's setting). They come first then: a car that has joined a Wi-Fi is, as
+ *                  a rule, reached on it, and its own Wi-Fi has nobody on it.
+ * Never the car's own networks beside those (vlan*, socnet0).
+ * `only` names the interfaces instead (a test; "*" is every one, a PC's own network: the emulator).
+ * `all`: the interfaces, in place of this computer's (a test).
  */
-function carWifi(only) {
-    const all = os.networkInterfaces(), out = [], every = !!only && only.indexOf('*') >= 0;
-    Object.keys(all).forEach((name) => (all[name] || []).forEach((a) => {
+function carWifi(only, joined, all) {
+    const list = all || os.networkInterfaces(), out = [], every = !!only && only.indexOf('*') >= 0;
+    Object.keys(list).forEach((name) => (list[name] || []).forEach((a) => {
         if (a.family !== 'IPv4' && a.family !== 4) return;
-        const wanted = every ? true : only ? only.indexOf(name) >= 0
-            : !a.internal && (name === 'wlan_bridge' || /^(uap|ap)\d/.test(name) || /^172\.16\.222\./.test(a.address));
-        if (wanted) out.push({ name, address: a.address, internal: !!a.internal });
+        let kind = null;
+        if (only) { if (every || only.indexOf(name) >= 0) kind = joined ? 'joined' : 'car'; }
+        else if (a.internal) kind = null;
+        else if (name === 'wlan_bridge' || /^(uap|ap)\d/.test(name) || /^172\.16\.222\./.test(a.address)) kind = 'car';
+        else if (joined && /^wlan\d+$/.test(name) && !/^169\.254\./.test(a.address)) kind = 'joined';
+        if (kind) out.push({ name, address: a.address, internal: !!a.internal, kind });
     }));
-    return out.sort((a, b) => (b.name === 'wlan_bridge') - (a.name === 'wlan_bridge') || a.internal - b.internal);
+    return out.sort((a, b) => (b.kind === 'joined') - (a.kind === 'joined') || (b.name === 'wlan_bridge') - (a.name === 'wlan_bridge') || a.internal - b.internal);
 }
 
 /**
@@ -87,7 +100,7 @@ function createService(opts) {
     let page = null, pad = null, lastUse = Date.now(), stopping = false, whyClosed = null;
 
     const view = () => (page
-        ? { open: true, url: page.urls[0] || null, urls: page.urls, until: page.until, firewall: page.firewall, saved: page.saved, note: page.note }
+        ? { open: true, url: page.urls[0] || null, urls: page.urls, nets: page.nets, until: page.until, firewall: page.firewall, saved: page.saved, note: page.note }
         : { open: false, why: whyClosed });
     const padView = () => (pad ? { on: true, name: pad.dev ? pad.dev.name : null, buttons: pad.buttons, error: pad.error } : { on: false });
     const status = () => ({ ok: true, version: VERSION, app: !!games.findApp(o.oapDir), page: view(), pad: padView() });
@@ -95,13 +108,13 @@ function createService(opts) {
     const changed = () => { if (page) say(page.owner, { event: 'page', page: view() }); };
     const padChanged = () => { if (pad) say(pad.owner, { event: 'pad', pad: padView() }); };
 
-    /** the car Wi-Fi as it is now: the port open on it, the page listening on it, its address for the code */
+    /** the Wi-Fi as it is now: the port open on it, the page listening on it, its address for the code */
     function refresh() {
         if (!page) return;
-        const wifi = carWifi(o.interfaces);
+        const wifi = carWifi(o.interfaces, page.joined);
         // (an interface with two addresses is one interface to the firewall)
         const names = wifi.map((i) => i.name).filter((n, i, all) => all.indexOf(n) === i);
-        const before = JSON.stringify([page.urls, page.firewall, page.note]);
+        const before = JSON.stringify([page.nets, page.firewall, page.note]);
         if (o.nft) {
             const r = firewall.open(names, o.port, { program: o.nft, last: page.signature });
             page.signature = r.errors.length ? null : r.signature;
@@ -109,20 +122,25 @@ function createService(opts) {
             if (r.changed || r.errors.length) log('firewall: ' + page.firewall);
         } else page.firewall = 'left alone';
         try { page.child.send({ op: 'listen', addresses: wifi.map((i) => i.address) }); } catch (e) { /* it is going */ }
-        page.urls = wifi.map((i) => 'http://' + i.address + ':' + o.port + '/' + page.token + '/');
-        page.note = wifi.length ? null : 'The car\'s Wi-Fi is off: switch on its hotspot, or connect the phone for wireless CarPlay';
-        // (for whoever reads the journal: what the head unit has, when none of it looks like the car Wi-Fi)
+        // (the first is the one for the code: the app shows it, and says which Wi-Fi it is by its kind)
+        page.nets = wifi.map((i) => ({ kind: i.kind, name: i.name, url: 'http://' + i.address + ':' + o.port + '/' + page.token + '/' }));
+        page.urls = page.nets.map((n) => n.url);
+        page.note = wifi.length ? null : page.joined ? 'No Wi-Fi a phone could be on: connect the car to the Wi-Fi the phone is on, or the phone to the car for wireless CarPlay'
+            : 'The car\'s Wi-Fi is off: switch on its hotspot, or connect the phone for wireless CarPlay';
+        // (for whoever reads the journal: what the head unit has, when none of it is a Wi-Fi to open the page on)
         const seen = wifi.length ? '' : carWifi(['*']).map((i) => i.name + ' ' + i.address).join(', ');
-        if (seen !== page.seen) { page.seen = seen; if (seen) log('no car Wi-Fi among the interfaces: ' + seen); }
-        if (JSON.stringify([page.urls, page.firewall, page.note]) !== before) changed();
+        if (seen !== page.seen) { page.seen = seen; if (seen) log('no Wi-Fi for the page among the interfaces: ' + seen); }
+        if (JSON.stringify([page.nets, page.firewall, page.note]) !== before) changed();
     }
 
-    function openPage(owner) {
+    /** joined: on a Wi-Fi the head unit has joined too, not its own alone (the app asks, by its setting) */
+    function openPage(owner, joined) {
         const app = games.findApp(o.oapDir);
         if (!app) return { ok: false, error: 'The NES app is not installed' };
         if (page) {                                  // open already: it is this connection's now, for its full time
             page.owner = owner;
             page.until = Date.now() + o.pageMinutes * 60000;
+            if (page.joined !== joined) { page.joined = joined; refresh(); }
             return status();
         }
         // the page runs as the app's user; if that were root (it never is on a head unit), there is no page
@@ -137,7 +155,7 @@ function createService(opts) {
             log('the page did not start: ' + e.message);
             return { ok: false, error: 'The page did not start: ' + (e.code || e.message) };
         }
-        const mine = page = { token, child, owner, until: Date.now() + o.pageMinutes * 60000, urls: [], firewall: null, saved: [], note: null, signature: null, timer: null };
+        const mine = page = { token, child, owner, joined, until: Date.now() + o.pageMinutes * 60000, urls: [], nets: [], firewall: null, saved: [], note: null, signature: null, timer: null };
         child.on('message', (m) => {
             if (page !== mine || !m) return;
             if (m.event === 'saved' || m.event === 'removed' || m.event === 'refused') {
@@ -157,7 +175,7 @@ function createService(opts) {
             if (Date.now() > mine.until) return closePage(o.pageMinutes + ' minutes without a game');
             refresh();
         }, o.refreshMs);
-        log('page open for ' + app.games + (o.asSelf ? '' : ', as user ' + app.uid));
+        log('page open for ' + app.games + (o.asSelf ? '' : ', as user ' + app.uid) + (joined ? ', on a Wi-Fi the head unit has joined too' : ', on the car\'s own Wi-Fi alone'));
         refresh();
         return status();
     }
@@ -232,7 +250,7 @@ function createService(opts) {
         lastUse = Date.now();
         if (!m || typeof m.cmd !== 'string') return say(c, { ok: false, error: 'a JSON object with "cmd" a line' });
         if (m.cmd === 'status') return say(c, status());
-        if (m.cmd === 'open') return say(c, openPage(c));
+        if (m.cmd === 'open') return say(c, openPage(c, m.joined === true));
         if (m.cmd === 'close') { if (page && page.owner === c) closePage('closed by the app'); return say(c, status()); }
         if (m.cmd === 'pad') {
             if (m.on !== false) return say(c, padOn(c));

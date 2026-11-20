@@ -514,6 +514,26 @@ function writePack(file, files) {
         assert.deepStrictEqual(loader.games.list(dir).map((g) => g.name).filter((n) => n !== 'Trap.nes'), ['my game.nes']);
         assert(loader.games.remove(dir, 'MY GAME.nes') && !loader.games.remove(dir, 'my game.nes') && !loader.games.remove(dir, '../outside.txt'));
     });
+    await check('loader: the page is on the car\'s own Wi-Fi; on a Wi-Fi the car has joined only when the app asks, and that one is first then; never on the car\'s other networks', () => {
+        const v4 = (address, internal) => [{ address, family: 'IPv4', internal: !!internal }, { address: 'fe80::1', family: 'IPv6', internal: !!internal }];
+        // (as a head unit had them, on its owner's home Wi-Fi: its /sys/class/net and /proc/net/fib_trie)
+        const unit = { lo: v4('127.0.0.1', true), 'p2p-wlan0-0': [], socnet0: v4('160.48.199.99'), vlan65: v4('160.48.199.119'), vlan73: v4('160.48.199.161'), wlan0: v4('192.168.1.173'), wlan_bridge: v4('172.16.222.97') };
+        const pick = (only, joined, all) => loader.service.carWifi(only, joined, all).map((i) => i.kind + ' ' + i.name + ' ' + i.address);
+        const but = (name) => { const o = Object.assign({}, unit); delete o[name]; return o; };
+        assert.deepStrictEqual(pick(null, false, unit), ['car wlan_bridge 172.16.222.97']);
+        assert.deepStrictEqual(pick(null, true, unit), ['joined wlan0 192.168.1.173', 'car wlan_bridge 172.16.222.97']);
+        // it has joined nothing, or has no address there yet
+        assert.deepStrictEqual(pick(null, true, but('wlan0')), ['car wlan_bridge 172.16.222.97']);
+        assert.deepStrictEqual(pick(null, true, Object.assign({}, unit, { wlan0: v4('169.254.10.7') })), ['car wlan_bridge 172.16.222.97']);
+        // it has no Wi-Fi of its own (no hotspot, no CarPlay): the one it joined, when asked, and nothing else
+        assert.deepStrictEqual(pick(null, true, but('wlan_bridge')), ['joined wlan0 192.168.1.173']);
+        assert.deepStrictEqual(pick(null, false, but('wlan_bridge')), []);
+        // an access point of its own under another name, a second Wi-Fi joined, a cable
+        assert.deepStrictEqual(pick(null, true, { uap0: v4('192.168.50.1'), wlan1: v4('10.0.0.12'), eth0: v4('10.1.1.1') }), ['joined wlan1 10.0.0.12', 'car uap0 192.168.50.1']);
+        // a test's own choice, and the emulator's
+        assert.deepStrictEqual(pick(['lo'], false, unit), ['car lo 127.0.0.1']);
+        assert.deepStrictEqual(pick(['*'], true, { lo: v4('127.0.0.1', true), eth0: v4('192.168.1.20') }), ['joined eth0 192.168.1.20', 'joined lo 127.0.0.1']);
+    });
     await check('loader: the firewall listing is read as the head unit prints it; a rule names one interface, the port and our mark', () => {
         const listing = ['table ip filter { # handle 1', '\tchain INPUT { # handle 1', '\t\ttype filter hook input priority filter; policy drop;',
             '\t\tiifname "wlan_bridge" tcp dport 8470 accept comment "mgu-updater-web" # handle 77',
@@ -593,6 +613,7 @@ function writePack(file, files) {
                 await until('the page', () => phone.state.step === 'open' && phone.state.page.url);
                 base = phone.state.page.url;
                 assert(/^http:\/\/127\.0\.0\.1:18493\/[0-9a-f]{20}\/$/.test(base), base);
+                assert(phone.state.page.nets[0].url === base && phone.state.page.nets.every((n) => n.kind === 'car' && n.name === 'lo'), JSON.stringify(phone.state.page.nets));
                 assert.strictEqual(qr(base).version, 3, 'the address fits a small code');
                 await until('the rules', () => rules('ip', 'filter', 'INPUT').length === 2);
                 assert.deepStrictEqual(rules('ip', 'filter', 'INPUT')[0], 'iifname "lo" tcp dport 18493 accept ' + mark);
@@ -635,10 +656,13 @@ function writePack(file, files) {
                 for (let i = 0; i < 40 && r === 'answered'; i++) { r = await request('GET', base).then(() => 'answered', (e) => e.code); if (r === 'answered') await sleep(50); }
                 assert.strictEqual(r, 'ECONNREFUSED', 'the page still answers');
                 // and when the app goes without a word (it crashed): the same
-                const gone = new Phone({ socket, log });
+                // (this time asked for on a Wi-Fi the head unit has joined, as the app's setting has it: the loader says which kind)
+                const gone = new Phone({ socket, log, joined: () => true });
                 gone.open();
                 await until('a page again', () => gone.state.step === 'open' && rules('ip', 'filter', 'INPUT').length === 2);
                 assert.notStrictEqual(gone.state.page.url, base, 'the same address twice');
+                assert(gone.state.page.nets.length && gone.state.page.nets.every((n) => n.kind === 'joined'), JSON.stringify(gone.state.page.nets));
+                assert(said.some((l) => /page open for .*on a Wi-Fi the head unit has joined too/.test(l)), said.join(' | '));
                 gone.conn.destroy();
                 gone.wanted = false;
                 await until('the rules gone again', () => rules('ip', 'filter', 'INPUT').length === 1);

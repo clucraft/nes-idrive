@@ -335,7 +335,9 @@ mgu.run({
         // On the game's screen, in the game's place (the top of this file says why): BTN_ADD opens GAME with
         // `adding` set, and BACK, which hides GAME, ends it.
         let addRec = null, pageKey = null;       // the page as it was last drawn, and what it was drawn from
-        const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, onChange: () => { pageKey = null; } });
+        // (setting "Add games over the Wi-Fi the car is on", on at first: the page on a Wi-Fi the head unit has joined too)
+        const joinedWifi = () => settings.get('joinedWifi') !== false;
+        const phone = new Phone({ socket: process.env.NES_LOADER_SOCK || config.loaderSocket, log, joined: joinedWifi, onChange: () => { pageKey = null; } });
         function stopAdding() { if (adding) { adding = false; pageKey = null; phone.close(); } }
         ui.onClick('BTN_ADD', () => { adding = true; pageKey = null; return ui.open('GAME'); });
         ui.onVisible((name, on) => {
@@ -371,9 +373,12 @@ mgu.run({
                 text('Parked only', 80, 150, 44, C.text, { font: 'bold' });
                 lines(['The code to scan shows when the car stands.', 'Settings: Parked only.'], 80, 220, 30, C.dim);
             } else if (s.step === 'open' && page.url) {
+                // which Wi-Fi the code is for: one the head unit has joined, or its own (the loader says: nets)
+                const nets = page.nets || [], joined = !!nets[0] && nets[0].kind === 'joined';
                 code(r, page.url, X(60), Y(40), Math.round(440 * k));
                 text('Scan with your phone', 560, 86, 44, C.text, { font: 'bold' });
-                lines(['1   The phone on the car\'s Wi-Fi (wireless CarPlay, or its hotspot)',
+                lines([joined ? '1   The phone on the same Wi-Fi as the car (your home Wi-Fi, or the phone\'s own hotspot)'
+                    : '1   The phone on the car\'s Wi-Fi (wireless CarPlay, or its hotspot)',
                     '2   Scan the code with the camera and pick your .nes files',
                     '3   BACK when you are done: the games are in the menu'], 560, 146, 28, C.dim, 44);
                 text(fits(page.url, 24, 900), 560, 290, 24, C.dim, { literal: true });
@@ -384,6 +389,13 @@ mgu.run({
                     text(fits(bad ? g.name + ': ' + g.refused : g.name + (g.removed ? ' removed' : g.replaced ? ' replaced' : ' added'), 28, 880), 592, y, 28, bad ? C.bad : C.good, { literal: true });
                 });
                 if (!recent.length && /^failed/.test(page.firewall || '')) lines(['The head unit\'s firewall could not be opened:', fits(page.firewall, 24, 900)], 560, 346, 24, C.bad);
+                // the car's own Wi-Fi is up as well: a phone on wireless CarPlay is on that one, and this code is not for it
+                else if (!recent.length && joined && nets.some((n) => n.kind === 'car')) {
+                    lines(['A phone on wireless CarPlay is on the car\'s own Wi-Fi instead. For that, switch off', '"Add games over the Wi-Fi the car is on" in the menu.'], 560, 346, 24, C.dim);
+                }
+            } else if (s.step === 'open' && joinedWifi()) {
+                text('No Wi-Fi to send over', 80, 150, 44, C.text, { font: 'bold' });
+                lines(['Connect the car to the Wi-Fi your phone is on: your home Wi-Fi, or the phone\'s own hotspot.', 'Or connect the phone for wireless CarPlay. The code to scan shows here then.'], 80, 220, 30, C.dim);
             } else if (s.step === 'open') {
                 text('The car\'s Wi-Fi is off', 80, 150, 44, C.text, { font: 'bold' });
                 lines(['Switch on the car\'s hotspot, or connect the phone for wireless CarPlay.', 'The code to scan shows here then.'], 80, 220, 30, C.dim);

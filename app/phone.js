@@ -7,14 +7,19 @@
  * a page on the car Wi-Fi for as long as the app asks, and puts the games sent there into the app's games folder.
  * This is the asking: a connection to the loader's socket, a JSON object a line (loader/service.js).
  *
- *   const phone = new Phone({ socket, log, onChange });
+ *   const phone = new Phone({ socket, log, onChange, joined });
  *   phone.open();        the "Add games" screen is up: ask for the page, and keep asking while it is
  *   phone.close();       the screen is gone: the page goes with the connection
  *   phone.state          { step, page, error }
  *
+ * joined(): true to ask for the page on a Wi-Fi the head unit has joined too (a home network, a phone's
+ * hotspot), not its own Wi-Fi alone: the app's setting.
+ *
  * step:  'off'       not asked
  *        'asking'    connecting to the loader, or waiting for its answer
- *        'open'      page: { url, urls, until, firewall, saved: [{ name, size, replaced, removed, refused }], note }
+ *        'open'      page: { url, urls, nets: [{ kind: 'joined' or 'car', name, url }], until, firewall,
+ *                    saved: [{ name, size, replaced, removed, refused }], note }; url is nets[0]'s (a loader
+ *                    from before 0.2.2 tells no nets: its url is on the head unit's own Wi-Fi)
  *        'missing'   the loader is not installed (or not started yet: the head unit needs a restart after its install)
  *        'refused'   the loader is there but not for this app yet (it was installed before the app: a restart settles it)
  *        'failed'    error says what
@@ -69,7 +74,9 @@ class Phone {
         this.conn = c;
         let text = '';
         c.setEncoding('utf8');
-        c.on('connect', () => c.write('{"cmd":"open"}\n'));
+        // joined: on a Wi-Fi the head unit has joined too (a loader from before 0.2.2 does not know the word, and
+        // opens the page on the head unit's own Wi-Fi alone)
+        c.on('connect', () => c.write(JSON.stringify({ cmd: 'open', joined: !!(this.o.joined && this.o.joined()) }) + '\n'));
         c.on('data', (d) => {
             if (this.conn !== c) return;
             text += d;
