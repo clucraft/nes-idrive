@@ -2,7 +2,7 @@
 
 **Nintendo Entertainment System games on the BMW iDrive 7 (MGU) head unit itself.** The [FCEUmm](https://github.com/libretro/libretro-fceumm) emulator runs inside an app on the head unit, built on the [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) kit the way its Doom app is: 60 frames a second, the console's picture shown three times as big, pixel for pixel, played with the iDrive controller and buttons on the touchscreen. For when you're parked.
 
-> **Status: proof of concept, not yet run on a car.** Everything below works in the emulator on a PC and under Node 8, the Node.js the head unit runs apps on. How it behaves on the head unit's processor, and within its limits for apps, is what the first test on a car has to show. See [What still needs a car](#what-still-needs-a-car).
+> **Status: proof of concept, tried on one car so far.** There the MGU Store installed the app and the NES game loader, and an Xbox pad on a cable worked as a [USB gamepad](#a-usb-gamepad). Everything else below is known from the emulator on a PC and from Node 8, the Node.js the head unit runs apps on. How the app behaves on the head unit's processor, and within its limits for apps, has not been measured. See [What still needs a car](#what-still-needs-a-car).
 
 > **Your iDrive 7 head unit must be rooted to use this.** BMW's head unit only runs apps BMW installs, so the app can only be installed on a unit you have root (SSH) access to, [from the MGU Store](#from-the-mgu-store) or [with the kit's installer](#with-the-kits-installer). Rooting is done with the community tool [idrive7-8-ssh-root](https://github.com/cauliflowermossgrape/idrive7-8-ssh-root). It can wipe the head unit's coding, delete BMW Digital Key pairings and, at worst, brick the unit. Read [Rooting your head unit](#rooting-your-head-unit) before you start. The emulator on a PC needs no root.
 
@@ -57,7 +57,7 @@ An **Xbox One or Xbox Series pad on a cable**, plugged into the car's USB port, 
 
 - **It needs the [NES game loader](loader) and the setting *USB gamepad*,** which is off at first. The head unit's kernel has no gamepad driver of any kind, so a small program of the loader's reads the pad's USB packets, while a game runs and only then.
 - **Other pads:** another make's pad for the Xbox One is read the same way when it speaks that console's protocol. An Xbox 360 pad, a PlayStation pad and a plain USB pad are not read yet, and neither is a wireless pad's USB dongle.
-- ***Not tried on a car yet.*** On a PC a real Xbox One S pad has been read, every button and the left stick, and has played *Pad Test* in the emulator through the loader. [`loader/README.md`](loader/README.md) says what has run and what has not.
+- **Tried on one car:** an Xbox One S pad works there (2026-11-19). On a PC the same pad was read first, every button and the left stick, and played *Pad Test* in the emulator through the loader. [`loader/README.md`](loader/README.md) says what has run and what has not.
 
 ### Saves
 
@@ -231,7 +231,7 @@ The [MGU Store](https://github.com/robertnisipeanu/mgu-store) is an app store fo
 3. **Restart the head unit** if the Store shows *Restart pending* (Settings → **Restart head unit**). The controller gate only takes effect then. Until it does, the game still runs, but the head unit acts on the controller as well: a push can open its own menus.
 4. **Try it:** open *Pad Test* and *Snake*, which come with the app.
 5. **Your own games, from a phone:** install **NES game loader** from the same source, and restart the head unit once. Then *Add games from a phone* in the app shows a code to scan. More on it, and on what it does to the head unit, in [`loader/README.md`](loader/README.md). *Not tried on a car yet.*
-   - **A USB gamepad** needs the loader too: with it installed, switch on *USB gamepad* in the app's settings and plug an Xbox pad in on a cable ([A USB gamepad](#a-usb-gamepad)). *Not tried on a car yet.*
+   - **A USB gamepad** needs the loader too: with it installed, switch on *USB gamepad* in the app's settings and plug an Xbox pad in on a cable ([A USB gamepad](#a-usb-gamepad)). *Tried on one car, with an Xbox One S pad: it works.*
 6. **Your own games, from a USB stick:** put the `.nes` files in a folder named `nes` at the top of the stick and plug it in. *Not tried on a car yet.*
 7. **Your own games, over SSH:** open the app once, so it makes its games folder. Then, with the SSH key and address from the rooting tool, ask the head unit for that folder:
 
@@ -254,7 +254,7 @@ The [MGU Store](https://github.com/robertnisipeanu/mgu-store) is an app store fo
 - **Updates:** a commit here that changes the package in `store/` shows in the Store as an update. It never installs on its own.
 - **A car without internet:** the Store can also read a copy of this repository from a USB stick. Its `deploy/mgu-install.js usb-repo <stick> github:clucraft/nes-idrive` makes one.
 
-> **Not tried on a car yet.** The Store route was checked against the Store's published rules for sources ([`docs/PUBLISHING.md`](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md)) and by `npm test`, not by an install.
+> **Tried on one car** (2026-11-19): the Store installed *NES* 0.4.0 and *NES game loader* 0.2.0 from this repository, read from its branch `mgu-store`, and both ran. Before that the Store route had only been checked against the Store's published rules for sources ([`docs/PUBLISHING.md`](https://github.com/robertnisipeanu/mgu-store/blob/main/docs/PUBLISHING.md)) and by `npm test`.
 
 ### With the kit's installer
 
@@ -301,10 +301,10 @@ The emulator on a PC draws with the kit's own draw engine and runs the kit's own
 - **Touch buttons:** whether taps land on the head unit's hidden bar buttons where the app draws them. The positions come from the kit's own model of the screen.
 - **The menu:** whether the head unit hides the unused game rows. If it doesn't, they show as "-".
 - **The controller:** the gate holding the knob for the game, and the first knob click counting.
-- **Games from a phone:** that the Store installs the NES game loader, that the app may reach its socket, that the firewall rule lets the phone in on the car's Wi-Fi, and which address the phone finds the head unit at. `journalctl -u clucraft-nes-loader` on the head unit says what the loader did.
-- **A USB gamepad:** everything past the stand-in. That the Store installs the loader's program and the head unit runs it; that the NES app's user, in the group of the head unit's USB devices, may open the pad; that the pad answers the packets that switch it on; and how soon a button reaches the game. A look at one head unit (kernel 4.14.198-apl) showed an Xbox One S pad listed on its USB bus with no driver bound, no HID or input layer in the kernel at all, and usbfs there for the group `mgu_usb`. `journalctl -u clucraft-nes-loader` has a line starting `gamepad:` for each step, and the app's log one for what it was told.
+- **Games from a phone:** that the firewall rule lets the phone in on the car's Wi-Fi, and which address the phone finds the head unit at. That the Store installs the NES game loader and that the app may reach its socket, the gamepad has shown on one car. `journalctl -u clucraft-nes-loader` on the head unit says what the loader did.
+- **A USB gamepad:** shown on one car (2026-11-19; kernel 4.14.198-apl, an Xbox One S pad), where it works. So the Store installs the loader's program and the head unit runs it; the NES app's user, in the group of the head unit's USB devices, may open the pad; and the pad answers the packets that switch it on. Before the loader's part was written, a look at that head unit had shown the pad listed on its USB bus with no driver bound, no HID or input layer in the kernel at all, and usbfs there for the group `mgu_usb`. Still to tell: how soon a button reaches the game, and whether another car's head unit is the same. `journalctl -u clucraft-nes-loader` has a line starting `gamepad:` for each step, and the app's log one for what it was told.
 - **Games on a USB stick:** whether the head unit lets the app read a stick at all. The app's log says at each start what it found, or what it was refused: a line starting `nes: USB sticks:`.
-- **The MGU Store:** that it lists and installs the app from this repository, and that the app draws through the Store's own renderer as it does through the kit's. mgu-render reads the kit renderer's commands, pixel images and the hold on the controller included. Its README lists the kit's apps drawing under it, and that hold, among what only a car can show.
+- **The MGU Store:** on one car it listed this repository and installed the app and the loader from it. Which renderer drew the app there was not noted, so this still stands: that the app draws through the Store's own renderer as it does through the kit's. mgu-render reads the kit renderer's commands, pixel images and the hold on the controller included. Its README lists the kit's apps drawing under it, and that hold, among what only a car can show.
 
 ## Known gaps
 

@@ -2,8 +2,9 @@
 
 What the feature is and how it limits itself is in [`README.md`](README.md), "A USB gamepad". This file
 keeps the reasons behind the design, what a look at a real head unit showed, and the steps that are still
-open. **Status (2026-11-19): built, tested against a stand-in for the pad, and tried on a real Xbox One S
-pad on a PC, where every button and the left stick were read correctly (below). Nothing has run on a car.**
+open. **Status (2026-11-19): built, tested against a stand-in for the pad, tried on a real Xbox One S
+pad on a PC, where every button and the left stick were read correctly, and then on one car, where the
+pad works as the gamepad (both below).**
 
 ## What a head unit showed
 
@@ -39,9 +40,8 @@ Read-only, over SSH, on one rooted iDrive 7 unit (kernel `4.14.198-apl`), with a
 - **A program in a Store tool is allowed.** The MGU Store's `docs/PUBLISHING.md`: "Native programs
   ship as tools", prebuilt and committed, run from `/var/opt/<id>/current/`.
 - **Not root.** `nes-usbpipe` is started as the NES app's user with the group of the pad's device file.
-  If the head unit refuses that user the device, the first car test shows it as
-  `gamepad: its helper ended (2): nes-usbpipe: ... permission denied` in the journal; what to do then is
-  open (see below).
+  The first car test showed that the head unit lets that user open the device. One that refused would
+  show as `gamepad: its helper ended (2): nes-usbpipe: ... permission denied` in the journal.
 - **Off unless asked for.** With the setting on, the loader runs for as long as a game does, and looks
   at the USB bus every two seconds. Until now nothing of the loader ran unless "Add games from a
   phone" was open; that stays true for everyone who leaves the setting off.
@@ -78,11 +78,14 @@ Read-only, over SSH, on one rooted iDrive 7 unit (kernel `4.14.198-apl`), with a
    Some of those packets are in `test/run.js` now. One thing to know: let go from full left, the stick
    sprang past the middle far enough (58 %) to be read as *right* for 10 ms. The D-pad has no such
    thing. If it shows in a game, a direction from the stick should have to last a few packets to count.
-2. **On the car.** Install the app and the loader from the Store, switch *USB gamepad* on, plug the
-   pad in, start *Pad Test*. `journalctl -u clucraft-nes-loader` has a `gamepad:` line for each step.
-   What can go wrong there and nowhere else: the Store not installing a 0755 program, the app's user
-   being refused the device (then: run `nes-usbpipe` as root after all, or as a user of its own), and the
-   head unit's recovery manager minding the extra process.
+2. **On the car: done, on one car** (2026-11-19, the head unit looked at above). The app (0.4.0) and
+   the loader (0.2.0) installed from the Store, *USB gamepad* switched on, the Xbox One S pad plugged
+   in: its owner reports that the gamepad works. Two of the things that could go wrong there and
+   nowhere else did not: the Store installed `nes-usbpipe` as a program that runs, and the app's user
+   was let at the device. Of the third, the head unit's recovery manager minding the extra process,
+   nothing was seen. Not kept from that run: which buttons were tried, whether a pad pulled out and
+   plugged in again came back, and the journal (`journalctl -u clucraft-nes-loader` has a `gamepad:`
+   line for each step).
 3. **Buttons a player would change:** which of A, B, X, Y is the NES pad's A and B is fixed in
    `app/pad.js` (`toNes`). A setting, as the controller's press and turns have, is a small change.
 4. **Other pads.** All need a reader in `pad.js`; none needs a kernel driver.

@@ -6,7 +6,7 @@ It exists because an app cannot do this on its own: the head unit's firewall dro
 
 It also reads a **USB gamepad** for the app, which an app cannot do either: [A USB gamepad](#a-usb-gamepad), below.
 
-> **Not tried on a car yet.** Everything here ran on a PC: the page, the checks on what it takes, the firewall rules against a stand-in for `nft`, the app's screen in the emulator. The MGU Store installing it, the real firewall and the car Wi-Fi are what the first try on a car shows. The gamepad has been read from a real Xbox One S pad on a PC, and has played a game in the emulator; on a car it has not.
+> **Tried on one car, in part** (2026-11-19). There the MGU Store installed the loader, the NES app reached it, and an Xbox One S pad on a cable worked as the gamepad. Games from a phone have not been tried on a car: the page, the checks on what it takes, the firewall rules against a stand-in for `nft` and the app's screen in the emulator ran on a PC. The real firewall and the car Wi-Fi are what a first try of that on a car shows.
 
 ## Using it
 
@@ -48,7 +48,9 @@ The head unit's kernel has no driver for a gamepad: no HID, no input events, no 
 - **A pad that cannot be read is left alone** after five tries in a row, until the next game.
 - **`nes-usbpipe` is a program, not a script:** Node.js has no way to talk to usbfs. It is built from `src/nes-usbpipe/main.go`, one file with no library beside Go's own, by `npm run build:usbpipe` on any computer, and is committed here as the Store installs it. It needs nothing of the head unit but its kernel.
 
-What has run, on a PC: the meaning of the packets against the kernel driver's, the pad found in a copy of what a head unit lists for an Xbox One S pad, and the whole way from a stand-in for `nes-usbpipe` through the loader to the app in the emulator, where *Pad Test* lit the stand-in's buttons. `nes-usbpipe` and `pad.js` have also read a real Xbox One S pad on a PC, in WSL, where the pad has no kernel driver either: the pad was switched on, and every button and the left stick's four directions, pressed by a person, were read as themselves (`node tools/pad-try.js`; [`CONTROLLER-HELPER.md`](CONTROLLER-HELPER.md) has the details). With `npm run emu -- --pad` that pad then played *Pad Test* in the emulator: its D-pad, View, Menu and A counted there, through this loader and the app as they are. **Nothing of this has run on a car.** What a PC cannot show is in the [main README](../README.md), "What still needs a car".
+What has run, on a PC: the meaning of the packets against the kernel driver's, the pad found in a copy of what a head unit lists for an Xbox One S pad, and the whole way from a stand-in for `nes-usbpipe` through the loader to the app in the emulator, where *Pad Test* lit the stand-in's buttons. `nes-usbpipe` and `pad.js` have also read a real Xbox One S pad on a PC, in WSL, where the pad has no kernel driver either: the pad was switched on, and every button and the left stick's four directions, pressed by a person, were read as themselves (`node tools/pad-try.js`; [`CONTROLLER-HELPER.md`](CONTROLLER-HELPER.md) has the details). With `npm run emu -- --pad` that pad then played *Pad Test* in the emulator: its D-pad, View, Menu and A counted there, through this loader and the app as they are.
+
+What has run, on a car (one, on 2026-11-19): with the app and the loader installed by the MGU Store and the setting on, the same pad worked as the gamepad. So the Store installs `nes-usbpipe` as a program the head unit runs, and the NES app's user may open the pad there. Which buttons were tried, and the loader's journal of it, were not kept. What is still open is in the [main README](../README.md), "What still needs a car".
 
 ## Removing it
 
